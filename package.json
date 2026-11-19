@@ -1,0 +1,55 @@
+{
+  "name": "antigravity-pulse",
+  "version": "0.9.0",
+  "description": "Antigravity Pulse — Spatial Bento HUD plugin for Antigravity Desktop: Concentric Dual-Ring Dynamic Island, real-time context & streaming tok/s telemetry, shared quota pools, magnetic context budget slider, 42-region multi-currency API cost ledger, binary 1M unlock, Lv.0-Lv.4 prompt enhancer, No-TUN proxy & shell localization.",
+  "main": "cli.js",
+  "bin": {
+    "antigravity-pulse": "./cli.js",
+    "ag-pulse": "./cli.js"
+  },
+  "scripts": {
+    "build:renderer": "node scripts/build-renderer.js",
+    "setup": "node cli.js setup",
+    "teardown": "node cli.js teardown",
+    "install-plugin": "node scripts/build-renderer.js && node cli.js install",
+    "install:plugin": "node scripts/build-renderer.js && node cli.js install",
+    "live": "node scripts/build-renderer.js && node cli.js live",
+    "live:relaunch": "node scripts/build-renderer.js && node cli.js live --relaunch",
+    "check": "node cli.js check",
+    "restore": "node cli.js restore",
+    "status": "node cli.js status",
+    "unlock": "node cli.js unlock",
+    "unlock:status": "node cli.js unlock-status",
+    "unlock:restore": "node cli.js unlock-restore",
+    "chinese:enable": "node cli.js chinese:enable",
+    "chinese:disable": "node cli.js chinese:disable",
+    "proxy:enable": "node cli.js proxy:enable",
+    "proxy:disable": "node cli.js proxy:disable",
+    "test": "node --test pulse-renderer.test.js"
+  },
+  "keywords": [
+    "antigravity",
+    "pulse",
+    "spatial-bento",
+    "context-window",
+    "token-ledger",
+    "quota-monitor",
+    "context-budget",
+    "electron-plugin"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "win32",
+    "linux"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DDG0808/antigravity-viewer-pulse.git"
+  },
+  "homepage": "https://github.com/DDG0808/antigravity-viewer-pulse",
+  "author": "DDG0808",
+  "license": "MIT"
+}

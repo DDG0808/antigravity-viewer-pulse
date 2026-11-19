@@ -1,0 +1,679 @@
+<!-- Antigravity Pulse — Spatial Bento HUD Shadow DOM Template -->
+<div class="island-anchor" id="islandAnchor">
+  <div class="dynamic-island" id="dynamicIsland" data-state="normal" role="button" tabindex="0" aria-label="Antigravity Pulse">
+    <svg class="concentric-dial" viewBox="0 0 20 20" aria-hidden="true">
+      <circle cx="10" cy="10" r="7.5" fill="none" stroke="var(--track)" stroke-width="2"></circle>
+      <circle id="dialCtx" cx="10" cy="10" r="7.5" fill="none" stroke="var(--accent)" stroke-width="2"
+        stroke-linecap="round" stroke-dasharray="47.12" stroke-dashoffset="47.12"></circle>
+      <circle cx="10" cy="10" r="4.3" fill="none" stroke="var(--track)" stroke-width="1.8"></circle>
+      <circle id="dialQuota" cx="10" cy="10" r="4.3" fill="none" stroke="var(--emerald)" stroke-width="1.8"
+        stroke-linecap="round" stroke-dasharray="27.02" stroke-dashoffset="0"></circle>
+    </svg>
+
+    <span class="island-stat mono">
+      <span id="islandCtxPct">--%</span>
+      <small class="island-quota-sub" id="islandQuotaSub">· --%</small>
+    </span>
+
+    <span class="island-divider"></span>
+
+    <span class="island-wave">
+      <span class="wave-bars"><i></i><i></i><i></i></span>
+      <span class="mono" id="islandTps">--</span>
+      <small>tok/s</small>
+    </span>
+  </div>
+
+  <!-- 悬停极简微浮窗 -->
+  <div class="glance-tooltip" id="glanceTip">
+    <div class="glance-row">
+      <span class="glance-lbl" data-i18n="tipCtx">上下文窗口</span>
+      <strong class="mono" id="tipCtxVal">-- / --</strong>
+    </div>
+    <div class="glance-row">
+      <span class="glance-lbl" id="tipPoolLbl" data-i18n="tipQuota">共享额度池</span>
+      <strong class="mono" id="tipQuotaVal" style="color:var(--emerald)">--%</strong>
+    </div>
+    <div class="glance-row">
+      <span class="glance-lbl" data-i18n="tipCache">缓存命中率</span>
+      <strong class="mono" id="tipCacheVal" style="color:var(--emerald)">--%</strong>
+    </div>
+    <div class="glance-row">
+      <span class="glance-lbl" data-i18n="tipToday">今日累计</span>
+      <strong class="mono" id="tipTodayVal">0 tok · $0.00</strong>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Spatial Bento HUD 主舞台 ==================== -->
+<section class="pulse-hud closed" id="pulseHud" aria-label="Antigravity Pulse Spatial HUD">
+  <!-- 左侧 62px 空间导航纵轨 -->
+  <nav class="hud-nav-rail">
+    <div class="nav-group">
+      <button class="rail-btn active" type="button" data-space="cockpit" title="实时总览驾驶舱">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="8" height="10" rx="2"/><rect x="13" y="3" width="8" height="6" rx="2"/><rect x="13" y="11" width="8" height="10" rx="2"/><rect x="3" y="15" width="8" height="6" rx="2"/></svg>
+        <span data-i18n="navCockpit">总览</span>
+      </button>
+
+      <button class="rail-btn" type="button" data-space="budget" title="模型独立预算与底座解锁">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+        <span data-i18n="navBudget">预算</span>
+      </button>
+
+      <button class="rail-btn" type="button" data-space="ledger" title="Token 脉搏热力图与订阅账本">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 16l4-5 4 3 5-7"/></svg>
+        <span data-i18n="navLedger">账本</span>
+      </button>
+
+      <button class="rail-btn" type="button" data-space="studio" title="内核增强、免 TUN 拓扑与主题工坊">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+        <span data-i18n="navStudio">工坊</span>
+      </button>
+    </div>
+
+    <div class="nav-group">
+      <button class="rail-mini-btn" id="btnOpenUpdateSheet" type="button" title="版本检查与热更新 ({{PULSE_VERSION}})">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M5 21h14"/></svg>
+        <i class="badge-dot" id="updateBadgeDot" hidden></i>
+      </button>
+      <button class="rail-mini-btn" id="btnToggleDock" type="button" title="切换悬浮玻璃窗 / 右侧贴边抽屉">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+      </button>
+      <button class="rail-mini-btn" id="btnHideHud" type="button" title="收起面板 (Esc)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </nav>
+
+  <!-- 右侧空间主画布 -->
+  <div class="hud-canvas">
+    <div class="canvas-header">
+      <div class="header-context">
+        <span class="header-title" id="spaceHeading" data-i18n="headCockpit">实时驾驶舱</span>
+        <span class="model-capsule mono" id="activeModelPill"><i></i><span id="activeModelTxt">等待会话...</span></span>
+      </div>
+
+      <div class="header-tools">
+        <button class="restart-pill" id="btnRestartBanner" type="button" hidden>
+          <span>↻</span><span data-i18n="restartNow">重启生效</span>
+        </button>
+        <div class="seg-bar" id="panelLangSeg">
+          <button class="seg-item on" type="button" data-plang="zh-CN">简</button>
+          <button class="seg-item" type="button" data-plang="zh-TW">繁</button>
+          <button class="seg-item" type="button" data-plang="en">EN</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== SPACE 1: 实时总览驾驶舱 ==================== -->
+    <div class="space-view active" id="space-cockpit">
+      <div class="cockpit-top-grid">
+        <!-- 左卡：上下文圆环 + 快捷档位 + DNA 6 段光带 -->
+        <div class="tile">
+          <div class="tile-label">
+            <span data-i18n="ctxWindowTitle">会话上下文窗口</span>
+            <span class="tag neutral" id="ctxHealthTag">待机中</span>
+          </div>
+
+          <div class="ctx-main-row">
+            <div style="min-width:0;flex:1">
+              <div class="hero-num mono"><span id="heroUsedVal">0</span><span class="hero-unit" id="heroUsedUnit">tok</span></div>
+              <div>
+                <button class="ctx-budget-pill mono" id="btnJumpBudget" type="button" title="前往「预算」空间调整模型上下文上限">
+                  <span data-i18n="limitLabel">上限</span>
+                  <strong id="heroLimitLbl">256K</strong>
+                  <span class="jump-hint">预算 ›</span>
+                </button>
+              </div>
+              <div style="font-size:11px;color:var(--fg-2);margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" class="mono" id="sessionCostTxt">本轮 $0.000 · 会话 $0.00</div>
+            </div>
+
+            <div class="arc-gauge-wrap">
+              <svg viewBox="0 0 100 100">
+                <circle cx="50" cy="50" r="41" fill="none" stroke="var(--track)" stroke-width="7.2"></circle>
+                <circle id="heroCtxCircle" cx="50" cy="50" r="41" fill="none" stroke="var(--accent)" stroke-width="7.2"
+                  stroke-linecap="round" stroke-dasharray="257.61" stroke-dashoffset="257.61"></circle>
+              </svg>
+              <div class="arc-center">
+                <div class="mono" style="font-size:18px;font-weight:700;letter-spacing:-0.03em" id="heroPctTxt">0.0%</div>
+                <div style="font-size:9.5px;color:var(--fg-3)" id="heroSourceMode" data-i18n="actualMeasured">等待响应</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="cache-strip" id="cacheTelemetryBox" data-cache-state="idle" data-open-sheet="auditSheet" title="当前展示整个会话的累计缓存命中率，点击查看最近一次模型请求明细">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11px">
+              <span style="display:inline-flex;align-items:baseline;gap:5px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                <span style="color:var(--fg-2)" data-i18n="cacheHitLabel">会话命中</span>
+                <strong class="mono" style="font-size:12.5px;color:var(--fg-2)" id="heroCacheHitPct">--%</strong>
+                <span class="mono" style="color:var(--fg-3);font-size:10px" id="heroCacheSessSub">· 等待请求</span>
+              </span>
+              <span class="cache-drill-link" id="cacheStateBadge" data-i18n="latestReqJump">最近请求 ›</span>
+            </div>
+            <div class="cache-bar"><i id="cacheHitBarFill" style="width:0%"></i></div>
+          </div>
+
+          <div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:10.5px;gap:8px">
+              <span style="color:var(--fg-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="dnaReadout">上下文构成 · 悬停色带查看占比</span>
+              <button class="ghost-link" type="button" data-open-sheet="auditSheet"><span id="auditLinkTxt">双账本与附件</span> ›</button>
+            </div>
+            <div class="dna-track" id="dnaTrack">
+              <div class="dna-seg" data-seg="sys" style="width:20%;background:#64748b"></div>
+              <div class="dna-seg" data-seg="chat" style="width:20%;background:var(--accent)"></div>
+              <div class="dna-seg" data-seg="think" style="width:15%;background:var(--violet)"></div>
+              <div class="dna-seg" data-seg="tool" style="width:25%;background:var(--accent-2)"></div>
+              <div class="dna-seg" data-seg="ckpt" style="width:10%;background:var(--amber)"></div>
+              <div class="dna-seg" data-seg="file" style="width:10%;background:var(--emerald)"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右卡：实时流式速率曲线 + 首字延迟 + 决斗榜入口 -->
+        <div class="tile">
+          <div class="tile-label">
+            <span data-i18n="streamTelemetry">流式生成遥测</span>
+            <button class="ghost-link" type="button" data-open-sheet="speedSheet"><span data-i18n="speedDuelLink">多模型测速决斗</span> ›</button>
+          </div>
+
+          <div style="display:flex;align-items:baseline;justify-content:space-between;margin-top:3px;gap:6px">
+            <div class="hero-num mono"><span id="heroTpsVal">--</span><span class="hero-unit">tok/s</span></div>
+            <span class="tag neutral" id="tpsDeltaTag">等待生成</span>
+          </div>
+
+          <canvas id="waveCanvas" width="268" height="70" style="width:100%;height:70px;margin:4px 0"></canvas>
+
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding-top:8px;border-top:1px solid var(--line)">
+            <div>
+              <div style="font-size:9.5px;color:var(--fg-3)">TTFT</div>
+              <div class="mono" style="font-size:12.5px;font-weight:600;margin-top:2px" id="heroTtftVal">--</div>
+            </div>
+            <div>
+              <div style="font-size:9.5px;color:var(--fg-3)" data-i18n="roundOutput">本轮输出</div>
+              <div class="mono" style="font-size:12.5px;font-weight:600;margin-top:2px" id="heroOutTok">--</div>
+            </div>
+            <div>
+              <div style="font-size:9.5px;color:var(--fg-3)" data-i18n="roundDur">总耗时</div>
+              <div class="mono" style="font-size:12.5px;color:var(--fg-1);font-weight:600;margin-top:2px" id="heroDurSec">--</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 下半区：共享模型额度池三联卡 -->
+      <div class="tile" style="padding:12px 15px">
+        <div class="tile-label" style="margin-bottom:8px">
+          <span style="display:flex;align-items:center;gap:8px;min-width:0">
+            <span data-i18n="sharedPoolsTitle">共享模型额度池</span>
+            <span class="mono" style="color:var(--fg-3);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="quotaMetaLine">尚未同步配额</span>
+          </span>
+          <button class="ghost-link" id="btnSyncQuotaNow" type="button">↻ <span data-i18n="syncQuotaBtn">同步配额</span></button>
+        </div>
+
+        <div class="quota-trio" id="quotaTrioGrid">
+          <div class="pool-mini-card selected">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:11.5px;font-weight:600">Gemini 主力池</span>
+              <span class="mono" style="font-size:10px;color:var(--fg-3)">同步中</span>
+            </div>
+            <div class="pool-bucket-stack">
+              <div class="pool-bucket-row">
+                <div class="pool-bucket-hdr mono"><span style="color:var(--fg-2)">5h · --:--</span><strong style="color:var(--fg-2)">--%</strong></div>
+                <div class="thin-bar"><i style="width:0%;background:var(--emerald)"></i></div>
+              </div>
+              <div class="pool-bucket-row">
+                <div class="pool-bucket-hdr mono"><span style="color:var(--fg-2)">周 · --</span><strong style="color:var(--fg-2)">--%</strong></div>
+                <div class="thin-bar"><i style="width:0%;background:var(--emerald)"></i></div>
+              </div>
+            </div>
+          </div>
+          <div class="pool-mini-card">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:11.5px;font-weight:600">Claude / 第三方池</span>
+              <span class="mono" style="font-size:10px;color:var(--fg-3)">同步中</span>
+            </div>
+            <div class="pool-bucket-stack">
+              <div class="pool-bucket-row">
+                <div class="pool-bucket-hdr mono"><span style="color:var(--fg-2)">5h · --:--</span><strong style="color:var(--fg-2)">--%</strong></div>
+                <div class="thin-bar"><i style="width:0%;background:var(--amber)"></i></div>
+              </div>
+              <div class="pool-bucket-row">
+                <div class="pool-bucket-hdr mono"><span style="color:var(--fg-2)">周 · --</span><strong style="color:var(--fg-2)">--%</strong></div>
+                <div class="thin-bar"><i style="width:0%;background:var(--amber)"></i></div>
+              </div>
+            </div>
+          </div>
+          <div class="pool-mini-card">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:11.5px;font-weight:600">Gemini Argon</span>
+              <span class="mono" style="font-size:10px;color:var(--fg-3)">同步中</span>
+            </div>
+            <div class="pool-bucket-stack">
+              <div class="pool-bucket-row">
+                <div class="pool-bucket-hdr mono"><span style="color:var(--fg-2)">周 · --</span><strong style="color:var(--fg-2)">--%</strong></div>
+                <div class="thin-bar"><i style="width:0%;background:var(--accent-2)"></i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== SPACE 2: 模型独立预算与磁吸滑轨引擎 ==================== -->
+    <div class="space-view" id="space-budget">
+      <div class="models-split">
+        <div class="vendor-rail">
+          <div class="seg-bar" style="width:100%;display:grid;grid-template-columns:1fr 1fr;margin-bottom:4px" id="budgetScopeSeg">
+            <button class="seg-item on" type="button" data-bscope="per_model" data-i18n="scopePerModel">按模型独立</button>
+            <button class="seg-item" type="button" data-bscope="unified" data-i18n="scopeUnified">全局统一</button>
+          </div>
+          <div id="budgetModelList" style="display:flex;flex-direction:column;gap:4px"></div>
+        </div>
+
+        <div class="tile" style="gap:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+            <div style="min-width:0">
+              <div style="font-size:10px;color:var(--fg-3)" data-i18n="selectedModelBudget">当前选中模型预算配置</div>
+              <div style="font-size:15.5px;font-weight:700;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="bModelTitle">Gemini 3.1 Pro</div>
+            </div>
+            <span class="tag neutral" id="binaryUnlockBadge">检测底座中...</span>
+          </div>
+
+          <div class="scrubber-box">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+              <span style="font-size:10.5px;color:var(--fg-2)" id="budgetHintRange">拖动滑轨或输入精确预算 (16,384 – 2,097,152)</span>
+              <div style="display:flex;align-items:center;gap:5px">
+                <input class="clean-field mono" id="exactTokenInput" type="number" min="16384" max="2097152" step="1024" value="256000" style="width:104px;text-align:right;font-weight:600" />
+                <span style="font-size:10px;color:var(--fg-3)">tok</span>
+              </div>
+            </div>
+
+            <input class="range-slider" id="budgetSlider" type="range" min="16384" max="2097152" step="1024" value="256000" />
+
+            <div class="detent-marks" id="detentBtns">
+              <button type="button" data-det="default">默认 256K</button>
+              <button type="button" data-det="128000">128K</button>
+              <button type="button" data-det="512000">512K</button>
+              <button type="button" data-det="max">理论最大</button>
+              <button type="button" data-det="1048576">1M</button>
+              <button type="button" data-det="dynamic">2M DYN</button>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+            <div class="scrubber-box" style="padding:8px 10px">
+              <div style="font-size:9.5px;color:var(--fg-3)" data-i18n="specTotalWin">模型总窗口</div>
+              <div class="mono" style="font-size:12.5px;font-weight:650;margin-top:2px" id="bSpecWin">1,048,576</div>
+            </div>
+            <div class="scrubber-box" style="padding:8px 10px">
+              <div style="font-size:9.5px;color:var(--fg-3)" data-i18n="specMaxOut">最大输出上限</div>
+              <div class="mono" style="font-size:12.5px;font-weight:650;margin-top:2px" id="bSpecOut">65,536</div>
+            </div>
+            <div class="scrubber-box" style="padding:8px 10px">
+              <div style="font-size:9.5px;color:var(--fg-3)" data-i18n="specMaxInput">理论最大输入</div>
+              <div class="mono" style="font-size:12.5px;font-weight:650;margin-top:2px" id="bSpecMax">983,040</div>
+            </div>
+          </div>
+
+          <div class="pipeline-3">
+            <div class="pipe-node"><small data-i18n="pipeSaved">本地目标</small><strong class="mono" id="pipeSaved">256,000</strong></div>
+            <span class="pipe-arrow">──▶</span>
+            <div class="pipe-node"><small data-i18n="pipeSent">请求注入</small><strong class="mono" id="pipeSent">待发送</strong></div>
+            <span class="pipe-arrow">──▶</span>
+            <div class="pipe-node"><small data-i18n="pipeAdopted">服务端采用</small><strong class="mono" style="color:var(--emerald)" id="pipeAdopted">待核验</strong></div>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+            <button class="ghost-link" style="color:var(--fg-3)" id="btnRestoreBin" type="button" data-i18n="restoreBin">还原官方原版二进制</button>
+            <div style="display:flex;gap:7px">
+              <button class="action-btn" id="btnSaveOnly" type="button" data-i18n="savePrefOnly">保存偏好</button>
+              <button class="action-btn primary" id="btnApplyBudget" type="button" data-i18n="saveAndSyncBin">保存并解锁底座</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== SPACE 3: 脉搏热力图、42国订阅与 API 三分类精算 ==================== -->
+    <div class="space-view" id="space-ledger">
+      <div style="display:grid;grid-template-columns:1.1fr 0.9fr;gap:11px">
+        <div class="tile" style="padding:12px 15px">
+          <div class="tile-label">
+            <span data-i18n="totalProcessedTok">累计处理 Token (含缓存读取)</span>
+            <div class="seg-bar" id="ledgerSrcSeg">
+              <button class="seg-item on" type="button" data-lsrc="all" data-i18n="srcAll">全部</button>
+              <button class="seg-item" type="button" data-lsrc="desktop" data-i18n="srcDesktop">桌面</button>
+              <button class="seg-item" type="button" data-lsrc="cli">CLI</button>
+            </div>
+          </div>
+          <div style="display:flex;align-items:baseline;justify-content:space-between;margin-top:5px;gap:8px">
+            <div class="hero-num mono"><span id="ledgerTotalVal">0</span><span class="hero-unit" id="ledgerTotalUnit">tok</span></div>
+            <div style="text-align:right" class="mono">
+              <div style="font-size:11px;color:var(--fg-2)" id="ledgerSubTotals">今日 0 · 本月 0</div>
+              <div style="font-size:10px;color:var(--emerald);margin-top:2px" id="ledgerCacheSummary">缓存命中 --% · 省 $0.00</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tile interactive" style="padding:12px 15px" data-open-sheet="subSheet">
+          <div class="tile-label">
+            <span data-i18n="subVsApiTitle">订阅实付 vs API 零售价值</span>
+            <span class="ghost-link"><span data-i18n="fxConfigLink">42 国汇率与权益</span> ›</span>
+          </div>
+          <div style="margin-top:6px">
+            <div class="mono" style="font-size:21px;font-weight:650;color:var(--emerald)" id="roiMultTxt">点击配置订阅价值</div>
+            <div class="mono" style="font-size:10.5px;color:var(--fg-2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="subSummaryLine">API 等效累计 $0.00</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tile" style="flex:1;min-height:0;gap:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;font-weight:600" data-i18n="activityPulse">活跃脉搏</span>
+            <button class="nav-step-btn" id="btnHmPrev" type="button" title="上一周期">‹</button>
+            <span class="mono" style="font-size:10.5px;color:var(--fg-2)" id="hmPeriodLbl">近 52 周</span>
+            <button class="nav-step-btn" id="btnHmNext" type="button" title="下一周期">›</button>
+            <button class="ghost-link" id="btnRefreshHistory" type="button" title="刷新历史账本">↻</button>
+          </div>
+
+          <div style="display:flex;gap:5px;align-items:center">
+            <div class="seg-bar" id="heatModeSeg">
+              <button class="seg-item on" type="button" data-hm="daily" data-i18n="hmDay">日</button>
+              <button class="seg-item" type="button" data-hm="weekly" data-i18n="hmWeek">周</button>
+              <button class="seg-item" type="button" data-hm="monthly" data-i18n="hmMonth">月</button>
+              <button class="seg-item" type="button" data-hm="yearly" data-i18n="hmYear">年</button>
+              <button class="seg-item" type="button" data-hm="cum" data-i18n="hmCum">累计</button>
+            </div>
+            <div class="seg-bar" id="ledgerBottomToggle">
+              <button class="seg-item on" type="button" data-lbot="sum" data-i18n="botSummary">周期</button>
+              <button class="seg-item" type="button" data-lbot="api" data-i18n="botApi">计价</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="hmDailyWrap" class="heat-matrix"></div>
+        <svg id="hmAltSvg" viewBox="0 0 600 108" width="100%" height="108" style="display:none;flex:1"></svg>
+
+        <div id="ledgerSumStrip" style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px solid var(--line);font-size:10.5px;gap:8px">
+          <span class="mono" style="color:var(--fg-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="hmHoverTxt">悬停色块查看当日输入 / 缓存 / 输出与美元折算</span>
+          <span class="mono" style="color:var(--fg-3);white-space:nowrap" id="hmActiveSummary">活跃 0 天 · 日均 $0.00</span>
+        </div>
+
+        <div id="ledgerApiStrip" style="display:none;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px solid var(--line);font-size:10.5px;gap:8px">
+          <div style="display:flex;gap:12px;flex-wrap:wrap" class="mono" id="apiBreakdownNums">
+            <span>输入: <strong>$0.00</strong></span>
+            <span>缓存 10%: <strong style="color:var(--emerald)">$0.00</strong></span>
+            <span>输出: <strong>$0.00</strong></span>
+          </div>
+          <div class="seg-bar" id="valuationModeSeg">
+            <button class="seg-item on" type="button" data-vmode="actual">实际混合</button>
+            <button class="seg-item" type="button" data-vmode="gemini-3.1-pro">按 G3.1 Pro</button>
+            <button class="seg-item" type="button" data-vmode="claude-opus-4-6-thinking">按 Opus 4.6</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== SPACE 4: 内核工坊 2x2 Bento ==================== -->
+    <div class="space-view" id="space-studio">
+      <div class="studio-bento">
+        <!-- 左上：防幻觉提示词精简 Lv.0-Lv.4 + 中文会话标题 -->
+        <div class="tile">
+          <div class="tile-label">
+            <span data-i18n="promptRuleTitle">提示词防幻觉精简</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:10.5px" data-i18n="zhChatTitle">中文标题</span>
+              <button class="apple-toggle" id="toggleZhTitle" type="button" aria-label="中文会话标题"></button>
+            </div>
+          </div>
+
+          <div class="seg-bar" style="width:100%;display:grid;grid-template-columns:repeat(5,1fr)" id="ruleTierSeg">
+            <button class="seg-item on" type="button" data-rtier="0">Lv.0</button>
+            <button class="seg-item" type="button" data-rtier="1">Lv.1</button>
+            <button class="seg-item" type="button" data-rtier="2">Lv.2</button>
+            <button class="seg-item" type="button" data-rtier="3">Lv.3</button>
+            <button class="seg-item" type="button" data-rtier="4">Lv.4</button>
+          </div>
+
+          <div style="font-size:10.5px;color:var(--fg-2);line-height:1.45" id="ruleImpactText">
+            <strong>Lv.0 官方原版：</strong>保持宿主原始提示词字节不变。
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+            <button class="ghost-link" style="color:var(--fg-3)" id="btnResetEnhance" type="button" data-i18n="restoreOfficial">恢复官方原版</button>
+            <button class="action-btn primary" id="btnApplyEnhance" type="button" data-i18n="applyEnhance">应用增强补丁</button>
+          </div>
+        </div>
+
+        <!-- 右上：免 TUN 本地代理四层拓扑 -->
+        <div class="tile">
+          <div class="tile-label">
+            <span data-i18n="noTunProxyTitle">免 TUN 进程级代理通道</span>
+            <button class="apple-toggle" id="toggleProxyMod" type="button" aria-label="启用免 TUN 代理"></button>
+          </div>
+
+          <div class="topo-nodes" id="proxyTopoBar">
+            <span class="topo-step" id="topoStep1"><i></i>格式</span>
+            <span style="color:var(--fg-3)">─</span>
+            <span class="topo-step" id="topoStep2"><i></i>握手</span>
+            <span style="color:var(--fg-3)">─</span>
+            <span class="topo-step" id="topoStep3"><i></i>公网</span>
+            <span style="color:var(--fg-3)">─</span>
+            <span class="topo-step" id="topoStep4"><i></i>会话</span>
+          </div>
+
+          <div style="display:flex;gap:6px">
+            <input class="clean-field mono" id="proxyUrlInput" type="text" placeholder="http://localhost:7897" style="flex:1;min-width:0" aria-label="本地代理地址" />
+            <button class="action-btn" id="btnPingTopo" type="button" data-i18n="diag4Layer">四层诊断</button>
+          </div>
+        </div>
+
+        <!-- 左下：桌面壳层汉化、品牌词热同步与服务控制 -->
+        <div class="tile">
+          <div class="tile-label">
+            <span data-i18n="shellAndBrandTitle">壳层汉化与左上角品牌</span>
+            <button class="ghost-link" id="btnReloadLs" type="button" data-i18n="reloadLs">重启语言服务</button>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:11px;color:var(--fg-2)" data-i18n="shellMenuLang">桌面菜单语言</span>
+            <div class="seg-bar" id="shellLangSeg">
+              <button class="seg-item on" type="button" data-slang="en">English</button>
+              <button class="seg-item" type="button" data-slang="zh-CN">简体中文</button>
+            </div>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:11px;color:var(--fg-2)" data-i18n="topLeftBrand">左上角品牌词</span>
+            <div class="seg-bar" id="brandWordSeg">
+              <button class="seg-item on" type="button" data-bword="english">Antigravity</button>
+              <button class="seg-item" type="button" data-bword="hidden" data-i18n="brandHide">隐藏</button>
+              <button class="seg-item" type="button" data-bword="translated">反重力</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右下：材质主题与 5 大高定色阶 -->
+        <div class="tile">
+          <div class="tile-label">
+            <span data-i18n="materialAndChroma">材质主题与热力色阶</span>
+            <button class="ghost-link" id="btnOpenRepo" type="button">GitHub ›</button>
+          </div>
+
+          <div class="theme-cards" id="themeCards">
+            <button class="th-card on" type="button" data-th="obsidian" data-i18n="thObsidian">深空黑曜</button>
+            <button class="th-card" type="button" data-th="alabaster" data-i18n="thAlabaster">云白磨砂</button>
+            <button class="th-card" type="button" data-th="pitch" data-i18n="thPitch">极夜纯黑</button>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:11px;color:var(--fg-2)" data-i18n="accentChroma">强调色与 5 档色阶</span>
+            <div class="chroma-dots" id="chromaDots">
+              <button class="c-dot on" type="button" style="background:#6366f1" data-chroma="#6366f1|#38bdf8|rgba(99,102,241,0.24)|#818cf8" title="电光靛 Indigo"></button>
+              <button class="c-dot" type="button" style="background:#10b981" data-chroma="#10b981|#34d399|rgba(16,185,129,0.24)|#6ee7b7" title="翡翠绿 Emerald"></button>
+              <button class="c-dot" type="button" style="background:#f59e0b" data-chroma="#f59e0b|#fbbf24|rgba(245,158,11,0.24)|#fcd34d" title="流金珀 Amber"></button>
+              <button class="c-dot" type="button" style="background:#ec4899" data-chroma="#ec4899|#f472b6|rgba(236,72,153,0.24)|#f9a8d4" title="霓虹粉 Rose"></button>
+              <button class="c-dot" type="button" style="background:#0ea5e9" data-chroma="#0ea5e9|#22d3ee|rgba(14,165,233,0.24)|#7dd3fc" title="冰川青 Cyan"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== GLASS SHEET 1: 双账本对账与全格式附件扫描 ==================== -->
+    <div class="glass-sheet" id="auditSheet">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div>
+          <div style="font-size:14px;font-weight:650" data-i18n="auditSheetTitle">会话缓存总览与最近一次请求对账</div>
+          <div style="font-size:10.5px;color:var(--fg-2)">先看整个会话累计缓存复用效率，再向下核对最近一次模型请求与本地附件</div>
+        </div>
+        <button class="action-btn" type="button" data-close-sheet="auditSheet">返回驾驶舱</button>
+      </div>
+
+      <!-- 第一层：整个会话累计缓存总览横幅 -->
+      <div class="scrubber-box audit-sess-banner" id="auditSessionCacheCard">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <div style="display:flex;align-items:baseline;gap:8px;min-width:0;flex-wrap:wrap">
+            <span style="font-size:11.5px;font-weight:600;color:var(--fg-1)">整段会话缓存命中率</span>
+            <strong class="mono" style="font-size:17px;font-weight:700;color:var(--emerald)" id="audSessCachePct">--%</strong>
+            <span class="tag neutral mono" id="audSessTurnTag">0 轮请求</span>
+          </div>
+          <div class="mono" style="font-size:11.5px;font-weight:600;color:var(--emerald);white-space:nowrap" id="audSessSavedBadge">累计省 $0.00</div>
+        </div>
+        <div class="cache-bar" style="height:5px"><i id="audSessCacheBar" style="width:0%"></i></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--fg-2);gap:8px" class="mono">
+          <span id="audSessTokDetail">累计缓存读取 -- / 会话总输入 --</span>
+          <span style="color:var(--fg-3)" id="audSessTrendHint">向下查看最近一次请求明细 ↓</span>
+        </div>
+      </div>
+
+      <!-- 第二层：最近一次模型请求 vs 归档附件明细 -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:11px;flex:1;min-height:0">
+        <div class="scrubber-box" style="display:flex;flex-direction:column;justify-content:space-between;gap:6px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+            <span style="font-size:11.5px;font-weight:600;color:var(--accent)">最近一次模型请求 (单轮返回)</span>
+            <span class="tag neutral mono" id="audLatestTurnBadge">最新轮</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:5.5px;font-size:11px" id="auditServerGrid">
+            <span style="color:var(--fg-2)">请求状态</span><strong id="audStatus">等待数据</strong>
+            <span style="color:var(--fg-2)">本次缓存命中率</span><strong class="mono" style="color:var(--emerald)" id="audCacheRate">--</strong>
+            <span style="color:var(--fg-2)">本次新输入 / 缓存</span><strong class="mono" id="audCacheSplit">--</strong>
+            <span style="color:var(--fg-2)">本次输入 + 输出</span><strong class="mono" id="audActualTok">--</strong>
+            <span style="color:var(--fg-2)">客户端估算值</span><strong class="mono" id="audEstTok">--</strong>
+            <span style="color:var(--fg-2)">请求预算 / 思考档</span><strong class="mono" id="audSentLim">--</strong>
+            <span style="color:var(--fg-2)">报错服务端限制</span><strong class="mono" id="audErrorLim">无超限</strong>
+          </div>
+          <div style="font-size:10px;color:var(--fg-3)" class="mono" id="audRuntimeLine">通道: 检测中...</div>
+        </div>
+
+        <div class="scrubber-box" style="display:flex;flex-direction:column;justify-content:space-between;gap:8px;min-height:0">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:11.5px;font-weight:600;color:var(--violet)">归档累计与附件明细</span>
+            <span class="mono" style="font-size:10px;color:var(--fg-3)" id="audStepStats">0 步</span>
+          </div>
+          <div class="file-audit-list" id="auditFileList">
+            <div style="font-size:11px;color:var(--fg-3);padding:12px 0;text-align:center">当前会话暂无外部附件或尚未完成扫描</div>
+          </div>
+          <button class="action-btn primary" id="btnSheetRescan" type="button">↻ 重新扫描整段归档与附件</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== GLASS SHEET 2: 多模型测速决斗与趋势 ==================== -->
+    <div class="glass-sheet" id="speedSheet">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+          <span style="font-size:14px;font-weight:650">本机实测性能基准与单模型趋势</span>
+          <div class="seg-bar" id="duelMetricSeg">
+            <button class="seg-item on" type="button" data-dm="tps">输出 tok/s</button>
+            <button class="seg-item" type="button" data-dm="ttft">首字 TTFT</button>
+            <button class="seg-item" type="button" data-dm="dur">单轮耗时</button>
+          </div>
+        </div>
+        <button class="action-btn" type="button" data-close-sheet="speedSheet">返回</button>
+      </div>
+
+      <div class="scrubber-box" id="duelBarsBox" style="display:flex;flex-direction:column;gap:9px;max-height:195px;overflow-y:auto"></div>
+
+      <div class="scrubber-box" style="flex:1;display:flex;flex-direction:column;justify-content:space-between;min-height:120px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--fg-2)">
+          <span id="duelTrendTitle">当前模型近轮真实流式速率轨迹</span>
+          <span class="mono" id="duelTrendMedian">样本采集中</span>
+        </div>
+        <svg id="duelTrendSvg" viewBox="0 0 580 92" width="100%" height="92"></svg>
+      </div>
+    </div>
+
+    <!-- ==================== GLASS SHEET 3: 42 国订阅汇率与获取权益配置 ==================== -->
+    <div class="glass-sheet" id="subSheet">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div>
+          <div style="font-size:14px;font-weight:650">AI 订阅地区、汇率折算与获取方式</div>
+          <div style="font-size:10.5px;color:var(--fg-2)">内置 42 个国家/地区汇率预设与家庭共享 / 教育 / 硬件赠送模式</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input class="clean-field" id="countrySearchInput" type="text" placeholder="搜索国家/货币 (如 TR, 土耳其, USD)" style="width:186px" />
+          <button class="action-btn primary" id="btnSaveSubConfig" type="button" data-close-sheet="subSheet">保存并返回</button>
+        </div>
+      </div>
+
+      <div class="seg-bar" style="flex-wrap:wrap" id="acqModeSeg">
+        <button class="seg-item on" type="button" data-acq="paid_pro">Google AI Pro 自付</button>
+        <button class="seg-item" type="button" data-acq="paid_ultra">AI Ultra 自付</button>
+        <button class="seg-item" type="button" data-acq="family_share">家庭组拼车</button>
+        <button class="seg-item" type="button" data-acq="free_edu">学生/Pixel 赠送 ($0)</button>
+        <button class="seg-item" type="button" data-acq="free_tier">免费层级 ($0)</button>
+      </div>
+
+      <div class="country-grid" id="countryGrid"></div>
+
+      <div class="scrubber-box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:11.5px;font-weight:600">自定义实付月费与币种</div>
+          <div style="font-size:10px;color:var(--fg-3)" id="subConversionPreview">折合人民币约 ¥0.00 / 月</div>
+        </div>
+        <div style="display:flex;gap:7px;align-items:center">
+          <span class="tag neutral mono" id="selectedCurrencyTag">USD $</span>
+          <input class="clean-field mono" id="subPriceInput" type="number" step="0.01" min="0" value="19.99" style="width:98px;text-align:right;font-weight:600" />
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== GLASS SHEET 4: 在线版本检查与 Live-Host 热更新 ==================== -->
+    <div class="glass-sheet" id="updateSheet">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-size:14px;font-weight:650">版本状态与 Live-Host 免重启热更新</div>
+          <div style="font-size:10.5px;color:var(--fg-2)" class="mono" id="runtimeVerDiag">Pulse {{PULSE_VERSION}}</div>
+        </div>
+        <button class="action-btn" type="button" data-close-sheet="updateSheet">关闭</button>
+      </div>
+
+      <div class="scrubber-box" style="flex:1;display:flex;flex-direction:column;justify-content:space-between;gap:10px">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="tag neutral" id="updateStateTag">当前版本 {{PULSE_VERSION}}</span>
+            <button class="ghost-link" id="btnCheckUpdateNow" type="button">↻ 立即检查 GitHub Release</button>
+          </div>
+          <div style="font-size:11.5px;line-height:1.65;color:var(--fg-2);margin-top:10px;white-space:pre-line" id="updateNotesBox">• Spatial Bento HUD 全新同心双环灵动岛与零滚动驾驶舱架构
+• 支持 Antigravity 2.31+ 共享额度池、请求级上下文预算磁吸注入与三态对账
+• 支持 42 国多币种订阅回本率精算、底座 1M/2M 解锁与免 TUN 进程级代理诊断</div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--fg-2)">
+            <span>启动时自动检查更新</span>
+            <button class="apple-toggle on" id="toggleAutoUpdate" type="button" aria-label="自动检查更新"></button>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="action-btn" id="btnHardRestartHost" type="button">平滑重启客户端</button>
+            <button class="action-btn primary" id="btnRunHotReload" type="button" disabled>暂无可用更新</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hud-toast" id="hudToast" role="status" aria-live="polite">已更新</div>
+  </div>
+</section>

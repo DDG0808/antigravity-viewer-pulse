@@ -1,0 +1,117 @@
+name: Release Antigravity Viewer Pulse
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag name (e.g. v0.9.0)'
+        required: true
+        default: 'v0.9.0'
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-test:
+    name: Build Renderer, Audit & Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Rebuild renderer bundle
+        run: node scripts/build-renderer.js
+
+      - name: Verify release manifest & version sync
+        run: node scripts/check-release-manifest.js
+
+      - name: Run telemetry, OTA & privacy unit tests
+        run: npm test
+
+  build-windows-helper:
+    name: Compile Windows C# Helper
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compile cli-window-helper.cs
+        shell: pwsh
+        run: |
+          $cscCandidates = @(
+            "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
+            "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+          )
+          $csc = $cscCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $csc) {
+            throw "csc.exe not found on runner"
+          }
+          & $csc /nologo /optimize+ /target:exe /out:scripts\cli-window-helper.exe scripts\cli-window-helper.cs
+          if (-not (Test-Path scripts\cli-window-helper.exe)) {
+            throw "Failed to compile scripts\cli-window-helper.exe"
+          }
+
+      - name: Upload compiled Windows helper
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cli-helper
+          path: scripts/cli-window-helper.exe
+
+  package-and-release:
+    name: Package Matrix ZIPs & Publish GitHub Release
+    needs:
+      - verify-and-test
+      - build-windows-helper
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download compiled Windows helper
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-cli-helper
+          path: scripts
+
+      - name: Determine release tag and version
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild renderer & package cross-platform bundles
+        run: |
+          node scripts/build-renderer.js
+          node scripts/package-release.js --version "${{ steps.meta.outputs.version }}" --out-dir dist/releases
+          cat dist/releases/checksums.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Antigravity Viewer Pulse ${{ steps.meta.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+          files: |
+            dist/releases/*.zip
+            dist/releases/checksums.txt

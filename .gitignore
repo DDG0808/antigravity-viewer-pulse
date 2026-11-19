@@ -1,0 +1,43 @@
+# Dependencies & Node artifacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local runtime state & installation snapshots (NEVER commit)
+installation.json
+.live-session.json
+*.backup
+*.bak
+*.orig
+*.asar
+*.asar.unpacked/
+backups/
+backup/
+logs/
+*.log
+
+# Build & release packaging outputs
+dist/
+releases/
+release-artifacts/
+*.zip
+checksums.txt
+
+# Redundant root binary (kept under scripts/ or built in CI)
+/cli-window-helper.exe
+
+# OS & editor metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+__pycache__/
+*.py[cod]
