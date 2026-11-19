@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" width="1200" height="640" fill="none">
+  <defs>
+    <linearGradient id="studioBg" x1="0" y1="0" x2="1200" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F4F6FA"/>
+      <stop offset="100%" stop-color="#E9EEF5"/>
+    </linearGradient>
+    <linearGradient id="sparkLight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3B82F6" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#3B82F6" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="winShadow" x="-6%" y="-6%" width="112%" height="116%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#0F172A" flood-opacity="0.09"/>
+    </filter>
+    <filter id="cardShadow" x="-8%" y="-8%" width="116%" height="120%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#0F172A" flood-opacity="0.06"/>
+    </filter>
+  </defs>
+
+  <!-- Soft Neutral Daylight Backdrop -->
+  <rect width="1200" height="640" rx="20" fill="url(#studioBg)"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="638.5" rx="19.25" stroke="#DCE3EE" stroke-width="1.5"/>
+
+  <!-- macOS Application Window -->
+  <g transform="translate(42, 30)" filter="url(#winShadow)">
+    <rect width="1116" height="580" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.2"/>
+
+    <!-- Window Top Titlebar -->
+    <path d="M14 0 H1102 A14 14 0 0 1 1116 14 V46 H0 V14 A14 14 0 0 1 14 0 Z" fill="#FFFFFF"/>
+    <line x1="0" y1="46" x2="1116" y2="46" stroke="#E2E8F0" stroke-width="1"/>
+
+    <!-- Traffic Lights -->
+    <circle cx="22" cy="23" r="6" fill="#FF5F57" stroke="#E0443E" stroke-width="0.6"/>
+    <circle cx="42" cy="23" r="6" fill="#FEBC2E" stroke="#D89E24" stroke-width="0.6"/>
+    <circle cx="62" cy="23" r="6" fill="#28C840" stroke="#1AAB29" stroke-width="0.6"/>
+
+    <text x="92" y="28" fill="#64748B" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12.5" font-weight="500">Antigravity  —  workspace / server-refactor</text>
+
+    <!-- Right Topbar Status Capsule (Light Mode) -->
+    <g transform="translate(792, 7)">
+      <rect width="310" height="32" rx="16" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+      <circle cx="19" cy="16" r="9.5" stroke="#E2E8F0" stroke-width="2.6"/>
+      <circle cx="19" cy="16" r="9.5" stroke="#2563EB" stroke-width="2.6" stroke-dasharray="38 24" stroke-linecap="round" transform="rotate(-90 19 16)"/>
+      <circle cx="19" cy="16" r="5.5" stroke="#059669" stroke-width="2.2" stroke-dasharray="26 10" stroke-linecap="round" transform="rotate(-90 19 16)"/>
+      <text x="36" y="20.5" fill="#0F172A" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700">29% · 148.8K</text>
+      <line x1="134" y1="8" x2="134" y2="24" stroke="#CBD5E1" stroke-width="1"/>
+      <text x="144" y="20.5" fill="#059669" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="700">缓存 91.8%</text>
+      <line x1="224" y1="8" x2="224" y2="24" stroke="#CBD5E1" stroke-width="1"/>
+      <text x="234" y="20.5" fill="#2563EB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="700">152.4 t/s</text>
+    </g>
+
+    <!-- Left Workspace Area: Muted Conversation Skeleton + 2 Sub-Sheets -->
+    <g transform="translate(26, 68)">
+      <!-- Subtle background editor lines -->
+      <rect x="0" y="0" width="484" height="108" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+      <rect x="18" y="18" width="96" height="10" rx="5" fill="#CBD5E1"/>
+      <rect x="18" y="38" width="420" height="8" rx="4" fill="#E2E8F0"/>
+      <rect x="18" y="54" width="386" height="8" rx="4" fill="#E2E8F0"/>
+      <rect x="18" y="70" width="290" height="8" rx="4" fill="#F1F5F9"/>
+      <text x="18" y="95" fill="#94A3B8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">Step #14 completed · cacheReadTokens: 204,000 · outputTokens: 1,280</text>
+
+      <!-- Detail Callout 1: Single-Turn Cache Drilldown -->
+      <g transform="translate(0, 126)" filter="url(#cardShadow)">
+        <rect width="484" height="168" rx="14" fill="#FFFFFF" stroke="#DCE3EE" stroke-width="1.2"/>
+        <text x="20" y="30" fill="#0F172A" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="14" font-weight="700">缓存命中明细（会话累计 + 最近一次请求）</text>
+        <rect x="378" y="14" width="86" height="22" rx="11" fill="#ECFDF5"/>
+        <text x="421" y="29" text-anchor="middle" fill="#059669" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="11" font-weight="600">缓存复用正常</text>
+
+        <rect x="20" y="48" width="214" height="98" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+        <text x="34" y="72" fill="#64748B" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="11.5">整场会话累计命中</text>
+        <text x="34" y="104" fill="#0F172A" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" font-weight="800">91.8%</text>
+        <text x="124" y="103" fill="#059669" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700">省约 $4.62</text>
+        <text x="34" y="130" fill="#64748B" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">1.42M 命中 / 1.55M 可复用</text>
+
+        <rect x="250" y="48" width="214" height="98" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+        <text x="264" y="72" fill="#64748B" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="11.5">最近一次请求 (Step #14)</text>
+        <text x="264" y="104" fill="#2563EB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" font-weight="800">94.1%</text>
+        <text x="264" y="130" fill="#64748B" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">读取 204.0K · 新增 12.8K</text>
+      </g>
+
+      <!-- Detail Callout 2: Per-Model Context Budget Slider -->
+      <g transform="translate(0, 312)" filter="url(#cardShadow)">
+        <rect width="484" height="176" rx="14" fill="#FFFFFF" stroke="#DCE3EE" stroke-width="1.2"/>
+        <text x="20" y="30" fill="#0F172A" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="14" font-weight="700">按模型独立设置上下文预算</text>
+        <text x="464" y="30" text-anchor="end" fill="#2563EB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="800">512K</text>
+        <text x="20" y="52" fill="#64748B" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="12">统一在「预算」页调整，新建对话第 1 轮即写入 maxTokenLimit</text>
+
+        <!-- Clean Light Slider -->
+        <rect x="24" y="82" width="436" height="8" rx="4" fill="#E2E8F0"/>
+        <rect x="24" y="82" width="292" height="8" rx="4" fill="#2563EB"/>
+        <circle cx="316" cy="86" r="10" fill="#FFFFFF" stroke="#2563EB" stroke-width="3.5"/>
+
+        <text x="24" y="114" fill="#64748B" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">64K</text>
+        <text x="118" y="114" fill="#64748B" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">128K</text>
+        <text x="212" y="114" fill="#64748B" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">256K</text>
+        <text x="302" y="114" fill="#2563EB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="700">512K</text>
+        <text x="418" y="114" fill="#64748B" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">1M Max</text>
+
+        <rect x="20" y="132" width="444" height="28" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+        <text x="32" y="150" fill="#475569" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="11.5">支持浅色 / 深色面板切换  ·  macOS 官方更新自愈守护  ·  内置在线热更新</text>
+      </g>
+    </g>
+
+    <!-- Right Main Plugin Panel (Alabaster Light Theme) -->
+    <g transform="translate(534, 62)" filter="url(#cardShadow)">
+      <rect width="558" height="494" rx="16" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.2"/>
+
+      <!-- Left Navigation Rail -->
+      <rect x="10" y="10" width="46" height="474" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+      <rect x="17" y="20" width="32" height="32" rx="8" fill="#EFF6FF" stroke="#BFDBFE"/>
+      <circle cx="33" cy="36" r="6.5" stroke="#2563EB" stroke-width="2"/>
+
+      <rect x="17" y="62" width="32" height="32" rx="8" fill="transparent"/>
+      <path d="M27 78 H39 M33 72 V84" stroke="#64748B" stroke-width="1.8" stroke-linecap="round"/>
+
+      <rect x="17" y="104" width="32" height="32" rx="8" fill="transparent"/>
+      <rect x="26" y="114" width="14" height="12" rx="2" stroke="#64748B" stroke-width="1.6"/>
+
+      <rect x="17" y="146" width="32" height="32" rx="8" fill="transparent"/>
+      <circle cx="33" cy="162" r="5.5" stroke="#64748B" stroke-width="1.6"/>
+
+      <!-- Bottom Update Button -->
+      <rect x="17" y="440" width="32" height="32" rx="8" fill="#F1F5F9"/>
+      <path d="M33 450 V462 M28.5 455 L33 450.5 L37.5 455" stroke="#475569" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="43" cy="446" r="3.8" fill="#EF4444"/>
+
+      <!-- Panel Body -->
+      <g transform="translate(70, 16)">
+        <text x="2" y="20" fill="#0F172A" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700">当前会话概览</text>
+        <rect x="342" y="3" width="130" height="24" rx="12" fill="#F1F5F9" stroke="#E2E8F0"/>
+        <text x="407" y="19" text-anchor="middle" fill="#334155" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="11.5" font-weight="600">Claude Sonnet 4.5</text>
+
+        <!-- Section 1: Context Window -->
+        <g transform="translate(0, 38)">
+          <rect width="472" height="96" rx="13" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+          <text x="16" y="25" fill="#475569" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="12" font-weight="600">会话上下文窗口</text>
+          <rect x="366" y="9" width="92" height="22" rx="11" fill="#EFF6FF" stroke="#BFDBFE"/>
+          <text x="412" y="24" text-anchor="middle" fill="#2563EB" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="11" font-weight="600">预算 512K ›</text>
+
+          <text x="16" y="56" fill="#0F172A" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="23" font-weight="800">148.8K</text>
+          <text x="110" y="55" fill="#64748B" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">/ 512K  (已用 29.1% · 剩余 363.2K)</text>
+
+          <rect x="16" y="70" width="440" height="9" rx="4.5" fill="#E2E8F0"/>
+          <rect x="16" y="70" width="42" height="9" rx="4.5" fill="#6366F1"/>
+          <rect x="60" y="70" width="68" height="9" fill="#3B82F6"/>
+          <rect x="130" y="70" width="34" height="9" rx="3" fill="#10B981"/>
+        </g>
+
+        <!-- Section 2: Cache Hit Strip -->
+        <g transform="translate(0, 146)">
+          <rect width="472" height="62" rx="13" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1"/>
+          <text x="16" y="25" fill="#065F46" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="12.5" font-weight="700">会话累计缓存命中  91.8%</text>
+          <text x="192" y="25" fill="#059669" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700">已省 $4.62</text>
+          <text x="16" y="45" fill="#334155" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="11.5">累计命中 1.42M / 1.55M  ·  最近一轮命中 94.1%</text>
+          <rect x="372" y="17" width="84" height="28" rx="14" fill="#FFFFFF" stroke="#86EFAC"/>
+          <text x="414" y="35" text-anchor="middle" fill="#065F46" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="11.5" font-weight="600">最近请求 ›</text>
+        </g>
+
+        <!-- Section 3: Shared Model Quota Pools (5h + Weekly) -->
+        <g transform="translate(0, 220)">
+          <rect x="0" y="0" width="230" height="122" rx="13" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+          <text x="14" y="25" fill="#0F172A" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="12.5" font-weight="700">Gemini 共享额度池</text>
+          <text x="214" y="25" text-anchor="end" fill="#059669" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="800">76%</text>
+
+          <text x="14" y="54" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="700">5h</text>
+          <rect x="38" y="46" width="138" height="7.5" rx="3.75" fill="#E2E8F0"/>
+          <rect x="38" y="46" width="116" height="7.5" rx="3.75" fill="#3B82F6"/>
+          <text x="214" y="54" text-anchor="end" fill="#334155" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">84%</text>
+
+          <text x="14" y="80" fill="#475569" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="11" font-weight="700">周</text>
+          <rect x="38" y="72" width="138" height="7.5" rx="3.75" fill="#E2E8F0"/>
+          <rect x="38" y="72" width="105" height="7.5" rx="3.75" fill="#10B981"/>
+          <text x="214" y="80" text-anchor="end" fill="#334155" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">76%</text>
+
+          <text x="14" y="106" fill="#64748B" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="10.5">5h: 2h18m 后重置 · 周: 周四重置</text>
+
+          <rect x="242" y="0" width="230" height="122" rx="13" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+          <text x="256" y="25" fill="#0F172A" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="12.5" font-weight="700">Claude / GPT 共享池</text>
+          <text x="456" y="25" text-anchor="end" fill="#D97706" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="800">38%</text>
+
+          <text x="256" y="54" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="700">5h</text>
+          <rect x="280" y="46" width="138" height="7.5" rx="3.75" fill="#E2E8F0"/>
+          <rect x="280" y="46" width="96" height="7.5" rx="3.75" fill="#6366F1"/>
+          <text x="456" y="54" text-anchor="end" fill="#334155" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">70%</text>
+
+          <text x="256" y="80" fill="#475569" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="11" font-weight="700">周</text>
+          <rect x="280" y="72" width="138" height="7.5" rx="3.75" fill="#E2E8F0"/>
+          <rect x="280" y="72" width="52" height="7.5" rx="3.75" fill="#F59E0B"/>
+          <text x="456" y="80" text-anchor="end" fill="#D97706" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="700">38%</text>
+
+          <text x="256" y="106" fill="#64748B" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="10.5">5h: 4h05m 后重置 · 周: 周六重置</text>
+        </g>
+
+        <!-- Section 4: Verified End-to-End tok/s -->
+        <g transform="translate(0, 354)">
+          <rect width="472" height="104" rx="13" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+          <text x="16" y="25" fill="#475569" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="12" font-weight="600">生成输出速度（含首字等待 TTFT）</text>
+          <text x="16" y="58" fill="#0F172A" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="23" font-weight="800">152.4</text>
+          <text x="94" y="57" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="600">tok/s  ·  TTFT 0.46s</text>
+          <text x="16" y="82" fill="#64748B" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="11">本轮输出 1,280 tok · 仅统计当前对话</text>
+
+          <path d="M266 80 C290 78, 304 62, 326 64 C348 66, 366 44, 392 48 C416 52, 434 32, 456 36 L456 88 L266 88 Z" fill="url(#sparkLight)"/>
+          <path d="M266 80 C290 78, 304 62, 326 64 C348 66, 366 44, 392 48 C416 52, 434 32, 456 36" stroke="#2563EB" stroke-width="2.2" stroke-linecap="round"/>
+          <circle cx="456" cy="36" r="3.6" fill="#2563EB"/>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

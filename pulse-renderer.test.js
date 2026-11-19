@@ -673,6 +673,7 @@ test('4. Online update system (DDG0808/antigravity-viewer-pulse), ZIP integrity 
       if (entry.isDirectory()) {
         auditDir(fullPath);
       } else if (entry.isFile()) {
+        if (/\.(png|jpe?g|gif|webp|ico|exe)$/i.test(entry.name)) continue;
         const text = fs.readFileSync(fullPath, 'utf8');
         for (const item of leakPatterns) {
           const hit = text.match(item.re);
@@ -683,4 +684,6 @@ test('4. Online update system (DDG0808/antigravity-viewer-pulse), ZIP integrity 
   }
 
   auditDir(rootDir);
+  assert.ok(fs.existsSync(path.join(rootDir, 'assets/preview.png')), 'Missing assets/preview.png');
+  assert.match(fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8'), /assets\/preview\.png/);
 });
