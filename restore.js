@@ -311,6 +311,18 @@ async function restore(options = {}) {
               info.inPlaceCleaned = true;
               fs.writeFileSync(manifestPath, JSON.stringify(info, null, 2));
             }
+            try {
+              const snaps = fs.readdirSync(snapshotDir)
+                .filter(f => f.endsWith('.asar'))
+                .map(f => {
+                  const p = path.join(snapshotDir, f);
+                  return { p, mtime: fs.statSync(p).mtimeMs };
+                })
+                .sort((a, b) => b.mtime - a.mtime);
+              for (const old of snaps.slice(2)) {
+                try { fs.unlinkSync(old.p); } catch {}
+              }
+            } catch {}
             restoreCommitted = true;
             return { restored: targetFile, inPlaceCleaned: true, hotDisposed };
           } catch (err) {

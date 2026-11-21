@@ -210,9 +210,6 @@ try {
       if (!_cmd.hasSwitch('remote-debugging-port') && !_cmd.hasSwitch('remote-debugging-pipe') && process.env.AG_DISABLE_AUTO_CDP !== '1') {
         _cmd.appendSwitch('remote-debugging-address', _agLoopback);
         _cmd.appendSwitch('remote-debugging-port', '0');
-        if (!_cmd.hasSwitch('remote-allow-origins')) {
-          _cmd.appendSwitch('remote-allow-origins', '*');
-        }
       }
     }
   } catch {}

@@ -136,9 +136,41 @@ def _pe_text(data):
     raise PatchError(".text section not found")
 
 
-# --------------------------------------------------------------------------
-# Go symbol table
-# --------------------------------------------------------------------------
+def file_offset_to_va(data, file_off):
+    """Map an arbitrary file offset (e.g. rodata string) to its runtime VA across segments."""
+    if data[:4] == b"\xcf\xfa\xed\xfe":
+        ncmds = struct.unpack_from("<I", data, 16)[0]
+        off = 32
+        for _ in range(ncmds):
+            cmd, size = struct.unpack_from("<II", data, off)
+            if cmd == 0x19:  # LC_SEGMENT_64
+                vmaddr, _vmsz, fileoff, filesize = struct.unpack_from("<QQQQ", data, off + 24)
+                if filesize > 0 and fileoff <= file_off < fileoff + filesize:
+                    return vmaddr + (file_off - fileoff)
+            off += size
+    elif data[:4] == b"\x7fELF":
+        phoff = struct.unpack_from("<Q", data, 32)[0]
+        phentsize, phnum = struct.unpack_from("<HH", data, 54)
+        for i in range(phnum):
+            ph = phoff + i * phentsize
+            p_type = struct.unpack_from("<I", data, ph)[0]
+            if p_type == 1:  # PT_LOAD
+                p_offset, p_vaddr, _p_paddr, p_filesz = struct.unpack_from("<QQQQ", data, ph + 8)
+                if p_filesz > 0 and p_offset <= file_off < p_offset + p_filesz:
+                    return p_vaddr + (file_off - p_offset)
+    elif data[:2] == b"MZ":
+        pe = struct.unpack_from("<I", data, 0x3C)[0]
+        nsec = struct.unpack_from("<H", data, pe + 6)[0]
+        opt_size = struct.unpack_from("<H", data, pe + 20)[0]
+        opt = pe + 24
+        image_base = struct.unpack_from("<Q", data, opt + 24)[0]
+        sect = opt + opt_size
+        for _ in range(nsec):
+            _vsize, vaddr, rawsize, rawptr = struct.unpack_from("<IIII", data, sect + 8)
+            if rawsize > 0 and rawptr <= file_off < rawptr + rawsize:
+                return image_base + vaddr + (file_off - rawptr)
+            sect += 40
+    raise PatchError(f"cannot map file offset {file_off:#x} to virtual address")
 
 def find_pclntab(data):
     magic = struct.pack("<I", PCLNTAB_MAGIC)
@@ -251,7 +283,8 @@ def patch_env(data, funcs, text_va, text_off, arch):
     name_off = data.find(ENV_NAME)
     if name_off < 0:
         raise PatchError("env var name missing from rodata")
-    target = text_va - text_off + name_off
+    # 按所属段精确换算只读数据区虚拟地址，避免跨段对齐间隙导致地址偏移错位
+    target = file_offset_to_va(data, name_off)
     site_va = text_va + entryoff
 
     hits = [m.start() for m in re.finditer(re.escape(GETENV_STUB_ARM64), body)]
@@ -287,8 +320,11 @@ def resign(path):
     if sys.platform != "darwin":
         print("[i] non-macOS target: no ad-hoc signing step applied")
         return
-    subprocess.run(["codesign", "--force", "--sign", "-", "--options", "runtime", path],
-                   check=True, capture_output=True)
+    subprocess.run(
+        ["codesign", "--force", "--preserve-metadata=entitlements", "--sign", "-", "--options", "runtime", path],
+        check=True,
+        capture_output=True,
+    )
     subprocess.run(["codesign", "--verify", "--verbose=1", path],
                    check=True, capture_output=True)
 
@@ -343,10 +379,21 @@ def main():
         return
 
     dst = src if args.in_place else src + ".patched"
-    with open(dst, "wb") as fh:
-        fh.write(data)
-    os.chmod(dst, 0o755)
-    resign(dst)
+    # 采用临时文件写入并重签后再原子替换，避免覆写原 inode 引发内核代码签名缓存 SIGKILL
+    tmp = f"{dst}.tmp_{os.getpid()}"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.chmod(tmp, 0o755)
+        resign(tmp)
+        os.replace(tmp, dst)
+    except Exception:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        raise
     print(f"[*] wrote {dst}\n    sha256 {before[:12]} -> {after[:12]}")
 
 

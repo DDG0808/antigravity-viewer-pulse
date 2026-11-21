@@ -4,9 +4,13 @@
   function parseDurationSec(value) {
     if (value === undefined || value === null) return null;
     if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : null;
-    if (typeof value === 'object') {
-      const secPart = value.seconds !== undefined && value.seconds !== null ? Number(value.seconds) : NaN;
-      const nanoPart = value.nanos !== undefined && value.nanos !== null ? Number(value.nanos) : 0;
+    if (typeof value === 'object' && !Array.isArray(value)) {
+      const hasSec = value.seconds !== undefined && value.seconds !== null;
+      const hasNano = value.nanos !== undefined && value.nanos !== null;
+      if (!hasSec && !hasNano) return null;
+      // Protobuf Duration 在小于 1 秒时因 proto3 omitempty 会省略 seconds: 0，此时需按 0 秒累加 nanos
+      const secPart = hasSec ? Number(value.seconds) : 0;
+      const nanoPart = hasNano ? Number(value.nanos) : 0;
       if (Number.isFinite(secPart) && Number.isFinite(nanoPart)) {
         const total = secPart + nanoPart / 1e9;
         return total >= 0 ? total : null;
@@ -129,9 +133,12 @@
     // 对于 QuotaSummaryBucket（oneof remaining）或未指明契约的任意缺字段响应，证据不足一律视为未知。
     const canInferProto3ScalarZero = options.schemaKind === 'codeium_quota_info' || options.allowProto3ZeroDefault === true;
     const isExplicitlyDisabled = Boolean(options.unavailable || rawQuota.disabled === true);
-    const hasResetStr = typeof (rawQuota.resetTime || rawQuota.reset_time) === 'string'
-      && String(rawQuota.resetTime || rawQuota.reset_time).trim().length > 0
-      && !isNaN(Date.parse(rawQuota.resetTime || rawQuota.reset_time));
+    const rawResetStr = rawQuota.resetTime || rawQuota.reset_time;
+    const parsedResetMs = typeof rawResetStr === 'string' && rawResetStr.trim().length > 0
+      ? Date.parse(rawResetStr)
+      : NaN;
+    // 排除 1970-01-01 / 0001-01-01 等 Protobuf 零值纪元占位时间戳，避免将不限额状态误判为 0% 耗尽
+    const hasResetStr = Number.isFinite(parsedResetMs) && parsedResetMs >= 1577836800000;
     if (canInferProto3ScalarZero && !isExplicitlyDisabled && hasResetStr) {
       return { fraction: 0, hasValue: true, isExhausted: true, source: 'proto3_zero_with_reset' };
     }
@@ -161,7 +168,8 @@
       };
     }
     const parsedMs = Date.parse(resetTimeIso);
-    if (!Number.isFinite(parsedMs)) {
+    // 排除 Protobuf 零值纪元占位时间戳（早于 2020-01-01），防止误显为“已到重置时间”
+    if (!Number.isFinite(parsedMs) || parsedMs < 1577836800000) {
       return {
         hasResetTime: false,
         resetTimeIso: null,
@@ -600,24 +608,29 @@
     const estimate = number(context?.estimatedTokensUsed) || prevContext?.estimate || null;
     const budget = number(context?.maxContextTokens) || prevContext?.budget || null;
 
-    // 计算生成耗时与输出速度 (Tokens Per Second)
+    // 计算生成耗时与输出速度 (Tokens Per Second)，设置 50ms 最小有效耗时下界以过滤时钟微秒抖动异常峰值
     const ttft = parseDurationSec(m.timeToFirstToken);
     const streamingSec = parseDurationSec(m.streamingDuration);
     const duration = (ttft !== null && streamingSec !== null) ? (ttft + streamingSec) : (ttft ?? streamingSec ?? null);
     let tps = null;
-    if (output && duration && duration > 0) {
+    if (output && duration && duration >= 0.05) {
       tps = Number((output / duration).toFixed(1));
     }
     const visibleResponseTokens = responseTokens !== null
       ? responseTokens
       : (output !== null && thinking !== null && output >= thinking ? output - thinking : output);
     let streamingTps = null;
-    if (visibleResponseTokens && streamingSec && streamingSec > 0.05) {
-      streamingTps = Number((visibleResponseTokens / streamingSec).toFixed(1));
+    if (output && streamingSec && streamingSec >= 0.05) {
+      streamingTps = Number((output / streamingSec).toFixed(1));
+    }
+    let visibleStreamingTps = null;
+    if (visibleResponseTokens && streamingSec && streamingSec >= 0.05) {
+      visibleStreamingTps = Number((visibleResponseTokens / streamingSec).toFixed(1));
     }
     const speed = (tps !== null || duration !== null || output !== null) ? {
       tps,
       streamingTps,
+      visibleStreamingTps,
       duration: duration !== null ? Number(duration.toFixed(2)) : null,
       ttft: ttft !== null ? Number(ttft.toFixed(2)) : null,
       streamingSec: streamingSec !== null ? Number(streamingSec.toFixed(2)) : null,
@@ -653,7 +666,7 @@
       errorClassification: classification,
       estimated: actual === null,
       input: hasInput ? (input || 0) + (cached || 0) : (prevContext?.input || null),
-      cached: cached || prevContext?.cached || 0,
+      cached: hasInput ? (cached ?? 0) : (prevContext?.cached ?? 0),
       output: output ?? (prevContext?.output ?? null),
       percent: percentVal,
       model,
@@ -1355,12 +1368,13 @@
     }
     const input = Number(req.inputTokens ?? req.input_tokens ?? req.input ?? 0);
     const cache = Number(req.cacheTokens ?? req.cacheReadTokens ?? req.cache_read_tokens ?? req.cached ?? 0);
+    const cacheWrite = Number(req.cacheWriteTokens ?? req.cacheCreationInputTokens ?? req.cache_creation_input_tokens ?? req.cache_write_tokens ?? 0);
     const output = Number(req.outputTokens ?? req.output_tokens ?? req.output ?? 0);
     const thinking = Number(req.thinkingTokens ?? req.thinking_output_tokens ?? req.thinking ?? 0);
-    const totalPrompt = input + cache;
+    const totalPrompt = input + cache + cacheWrite;
 
     const reqDate = (() => {
-      let d = '2026-11-08';
+      let d = formatLocalDateStr(new Date());
       const hasExplicitDate = req.date && /^\d{4}-\d{2}-\d{2}/.test(String(req.date));
       const isProv = req.dateIsProvisional === true || req.dateSource === 'provisional';
       if (!isProv && req.created_at && (!hasExplicitDate || !req.dateSource || req.dateSource === 'created_at')) {
@@ -1394,10 +1408,19 @@
       matchedTier = tierRules[0];
     }
 
+    // 核算缓存写入建库溢价（Anthropic 系列默认 1.25x 输入单价，其余支持显式 cacheWritePerMillion）
+    const defaultWriteRate = modelKey.startsWith('claude-')
+      ? matchedTier.inputPerMillion * 1.25
+      : matchedTier.inputPerMillion;
+    const writeRate = matchedTier.cacheWritePerMillion !== undefined
+      ? matchedTier.cacheWritePerMillion
+      : defaultWriteRate;
+
     const costInput = (input * matchedTier.inputPerMillion) / 1000000;
     const costCache = (cache * matchedTier.cacheReadPerMillion) / 1000000;
+    const costCacheWrite = (cacheWrite * writeRate) / 1000000;
     const costOutput = (output * matchedTier.outputPerMillion) / 1000000;
-    const totalCost = costInput + costCache + costOutput;
+    const totalCost = costInput + costCache + costCacheWrite + costOutput;
 
     return {
       costUSD: Number(totalCost.toFixed(6)),
@@ -1407,10 +1430,53 @@
       inputTokens: input,
       cacheTokens: cache,
       cacheReadTokens: cache,
+      cacheWriteTokens: cacheWrite,
       outputTokens: output,
       thinkingTokens: thinking,
-      totalTokens: input + cache + output
+      totalTokens: input + cache + cacheWrite + output
     };
+  }
+
+  /**
+   * 计算单次调用因上下文缓存产生的真实净节省金额（扣除建库写入溢价，防止短会话净亏时误报省钱）
+   */
+  function calculateNetCacheSavedUSD(req) {
+    if (!req || typeof req !== 'object') return 0;
+    const inp = Math.max(0, Number(req.inputTokens ?? req.input ?? 0));
+    const cap = Math.max(0, Number(req.cacheReadTokens ?? req.cacheTokens ?? req.cache ?? 0));
+    const cWrite = Math.max(0, Number(req.cacheWriteTokens ?? req.cacheCreationInputTokens ?? 0));
+    if (cap <= 0 && cWrite <= 0) return 0;
+
+    const priced = calculateRequestApiCost({
+      ...req,
+      inputTokens: inp,
+      cacheReadTokens: cap,
+      cacheTokens: cap,
+      cacheWriteTokens: cWrite
+    });
+    if (priced && priced.isPriced && priced.matchedTier) {
+      const inRate = priced.matchedTier.inputPerMillion;
+      const readRate = priced.matchedTier.cacheReadPerMillion;
+      const writeRate = priced.matchedTier.cacheWritePerMillion !== undefined
+        ? priced.matchedTier.cacheWritePerMillion
+        : (String(priced.modelKey || '').startsWith('claude-') ? inRate * 1.25 : inRate);
+      const grossSaved = (cap * Math.max(0, inRate - readRate)) / 1000000;
+      const writeSurcharge = (cWrite * Math.max(0, writeRate - inRate)) / 1000000;
+      return Number((grossSaved - writeSurcharge).toFixed(6));
+    }
+
+    const modelStr = String(extractModelString(req) || '').toLowerCase();
+    const inRate = modelStr.includes('opus') ? 4.00
+      : (modelStr.includes('sonnet') || modelStr.includes('carbon') || modelStr.includes('argon')) ? 2.00
+      : modelStr.includes('flash') ? 0.75
+      : 1.50;
+    const readRate = modelStr.includes('opus') ? 0.20
+      : (modelStr.includes('sonnet') || modelStr.includes('carbon') || modelStr.includes('argon')) ? 0.10
+      : 0.075;
+    const writeExtra = modelStr.includes('claude') || modelStr.includes('opus') || modelStr.includes('sonnet')
+      ? inRate * 0.25
+      : 0;
+    return Number(((cap * (inRate - readRate) - cWrite * writeExtra) / 1000000).toFixed(6));
   }
 
   function summarizeApiCost(requests = [], extraUnpricedCount = 0, extraUnpricedReasons = {}, extraUnpricedTokens = 0) {
@@ -1552,10 +1618,11 @@
 
     const input = Number(u.inputTokens ?? row.inputTokens ?? row.input_tokens ?? 0);
     const cached = Number(u.cacheReadTokens ?? row.cacheTokens ?? row.cacheReadTokens ?? row.cache_read_tokens ?? 0);
+    const cacheWrite = Number(u.cacheWriteTokens ?? u.cacheCreationInputTokens ?? row.cacheWriteTokens ?? row.cacheCreationInputTokens ?? row.cache_creation_input_tokens ?? 0);
     const output = Number(u.outputTokens ?? row.outputTokens ?? row.output_tokens ?? 0);
     const thinking = Number(u.thinkingOutputTokens ?? row.thinkingTokens ?? row.thinking_output_tokens ?? 0);
     const responseTokens = Number(u.responseOutputTokens ?? row.responseTokens ?? (output - thinking > 0 ? output - thinking : output));
-    const totalTokens = input + cached + output;
+    const totalTokens = input + cached + cacheWrite + output;
 
     const rawStepIdx = row.stepIndices?.[0] ?? row.stepIndex ?? row.step_index;
     const parsedStepIdx = rawStepIdx !== undefined && rawStepIdx !== null && rawStepIdx !== '' ? Number(rawStepIdx) : NaN;
@@ -1564,17 +1631,17 @@
     const callId = extractCallId(row, cascadeId, stepIndex ?? 0);
     if (!callId) return null;
 
-    // 完成状态管理：依据完成标记或耗时证据判定 final，流式中或只有部分文本时判定 streaming
+    // 完成状态管理：流式首包常仅含 inputTokens 而 outputTokens 为 0，需具备明确结束标记或实际产出输出后才标为 final
     const hasExplicitFinish = Boolean(
       row.status === 'final' ||
       row.status === 'completed' ||
       cm.finishReason ||
       row.finishReason ||
       row.done === true ||
-      (cm.streamingDuration != null && cm.timeToFirstToken != null)
+      (cm.streamingDuration != null && cm.timeToFirstToken != null && output > 0)
     );
     const hasUsage = totalTokens > 0;
-    const status = hasExplicitFinish || (hasUsage && !row.isStreaming && row.status !== 'streaming') ? 'final' : 'streaming';
+    const status = hasExplicitFinish || (output > 0 && !row.isStreaming && row.status !== 'streaming') ? 'final' : 'streaming';
     const isEstimated = !hasUsage || output === 0;
 
     // 日期与时间戳：优先按真实创建时间转为本地日历日；RPC 缺失时间时显式标记 provisional 以便后续被权威时间校准覆盖
@@ -1622,6 +1689,7 @@
       inputTokens: input,
       cacheTokens: cached,
       cacheReadTokens: cached,
+      cacheWriteTokens: cacheWrite,
       outputTokens: output,
       thinkingTokens: thinking,
       date: callDate,
@@ -1630,7 +1698,7 @@
     };
     const costCalc = calculateRequestApiCost(reqObj);
 
-    // 解析实测速度字段（绝不补零或估算缺失速度）
+    // 解析实测速度字段（绝不补零或估算缺失速度，并过滤小于 50ms 的异常抖动帧）
     const ttftSecRaw = parseDurationSec(cm.timeToFirstToken) ?? (row.ttftSec !== undefined && row.ttftSec !== null && Number.isFinite(Number(row.ttftSec)) && Number(row.ttftSec) >= 0 ? Number(row.ttftSec) : null);
     const streamingSecRaw = parseDurationSec(cm.streamingDuration) ?? (row.streamingSec !== undefined && row.streamingSec !== null && Number.isFinite(Number(row.streamingSec)) && Number(row.streamingSec) >= 0 ? Number(row.streamingSec) : null);
     let durationSecRaw = null;
@@ -1643,9 +1711,14 @@
     }
 
     const speedFields = {};
-    if (status === 'final' && !isEstimated && output > 0 && durationSecRaw !== null && durationSecRaw > 0) {
+    if (status === 'final' && !isEstimated && output > 0 && durationSecRaw !== null && durationSecRaw >= 0.05) {
       if (ttftSecRaw !== null) speedFields.ttftSec = Number(ttftSecRaw.toFixed(2));
-      if (streamingSecRaw !== null) speedFields.streamingSec = Number(streamingSecRaw.toFixed(2));
+      if (streamingSecRaw !== null) {
+        speedFields.streamingSec = Number(streamingSecRaw.toFixed(2));
+        if (streamingSecRaw >= 0.05) {
+          speedFields.streamingTps = Number((output / streamingSecRaw).toFixed(1));
+        }
+      }
       speedFields.durationSec = Number(durationSecRaw.toFixed(2));
       speedFields.tps = (row.tps !== undefined && row.tps !== null && Number.isFinite(Number(row.tps)) && Number(row.tps) > 0)
         ? Number(Number(row.tps).toFixed(1))
@@ -1666,6 +1739,7 @@
       inputTokens: input,
       cacheTokens: cached,
       cacheReadTokens: cached,
+      ...(cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {}),
       outputTokens: output,
       thinkingTokens: thinking,
       responseTokens,
@@ -2156,10 +2230,13 @@
   function findRegionPreset(regionQuery) {
     if (!regionQuery || typeof regionQuery !== 'string') return null;
     const q = regionQuery.trim().toLowerCase();
+    if (!q) return null;
+    // 严格按区域码、标准名称、币种或完整别名精确匹配，杜绝 "China" 子串命中 "in"（印度）的跨国错配
     return SUBSCRIPTION_REGIONS_PRESET.find(r =>
       r.id.toLowerCase() === q ||
       r.name.toLowerCase() === q ||
-      r.aliases.some(a => a.toLowerCase() === q || q.includes(a.toLowerCase()))
+      r.currency.toLowerCase() === q ||
+      r.aliases.some(a => a.toLowerCase() === q)
     ) || null;
   }
 
@@ -2279,7 +2356,7 @@
 
     let isExpired = false;
     if (validEndDate && /^\d{4}-\d{2}-\d{2}$/.test(String(validEndDate))) {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = formatLocalDateStr(new Date());
       if (String(validEndDate) < today) {
         isExpired = true;
       }
@@ -2499,7 +2576,7 @@
       };
     }
 
-    const todayStr = options.todayStr || (new Date()).toISOString().slice(0, 10);
+    const todayStr = options.todayStr || formatLocalDateStr(new Date());
     const currentMonthPrefix = todayStr.slice(0, 7);
     const currentYearPrefix = todayStr.slice(0, 4);
 
@@ -2671,7 +2748,10 @@
       return { costUSD: 0, inputCost: 0, cacheCost: 0, outputCost: 0 };
     }
     const mode = options.mode || 'ref';
-    const pricingDate = options.pricingDate ? String(options.pricingDate).slice(0, 10) : '2026-11-08';
+    const defaultDate = (dateKey && /^\d{4}-\d{2}-\d{2}/.test(String(dateKey)))
+      ? String(dateKey).slice(0, 10)
+      : formatLocalDateStr(new Date());
+    const pricingDate = options.pricingDate ? String(options.pricingDate).slice(0, 10) : defaultDate;
     const cacheKey = `${dateKey}:${modelKey}:${mode}:${pricingDate}:${dayRecord.input || 0}:${dayRecord.cache || 0}:${dayRecord.output || 0}:${dayRecord.total || 0}`;
     if (_dailyCostCache.has(cacheKey)) {
       return _dailyCostCache.get(cacheKey);
@@ -2705,7 +2785,7 @@
    * @param {Object} [options={}] - 配置参数 (mode, pricingDate, todayStr)
    */
   function calculateIntervalCost(dailyMap = {}, dateKeys = [], modelKey = 'gemini-3.8-flash', options = {}) {
-    const todayStr = options.todayStr || (new Date().toISOString().slice(0, 10));
+    const todayStr = options.todayStr || formatLocalDateStr(new Date());
     let totalTokens = 0;
     let inputTokens = 0;
     let cacheTokens = 0;
@@ -2755,7 +2835,7 @@
    */
   function parseSemver(tag) {
     if (!tag || typeof tag !== 'string') return null;
-    const m = tag.trim().match(/^v?(0|1)\.(\d+)\.(\d+)$/);
+    const m = tag.trim().match(/^v?(\d+)\.(\d+)\.(\d+)$/);
     if (!m) return null;
     return { major: parseInt(m[1], 10), minor: parseInt(m[2], 10), patch: parseInt(m[3], 10) };
   }
@@ -2779,7 +2859,7 @@
   /**
    * 过滤并筛选可用更新 Release
    */
-  function filterReleases(releasesList, currentVersion = '0.9.0') {
+  function filterReleases(releasesList, currentVersion = '0.9.1') {
     if (!Array.isArray(releasesList)) return [];
     const valid = [];
     for (const rel of releasesList) {
@@ -2815,7 +2895,6 @@
 
     let checksumAsset = null;
     let preferredPackageAsset = null;
-    let fallbackPackageAsset = null;
 
     for (const item of assets) {
       const name = item.name || '';
@@ -2824,14 +2903,12 @@
       } else if (name.endsWith(suffix)) {
         if (name.startsWith('antigravity-viewer-pulse_') || name.startsWith('antigravity-pulse_')) {
           preferredPackageAsset = item;
-        } else if (!fallbackPackageAsset) {
-          fallbackPackageAsset = item;
         }
       }
     }
 
     return {
-      packageAsset: preferredPackageAsset || fallbackPackageAsset,
+      packageAsset: preferredPackageAsset,
       checksumAsset,
       targetOs,
       targetArch
@@ -2859,11 +2936,27 @@
   }
 
   function inferGroupBucketLabel(windowStr, bucketId = '') {
-    const w = String(windowStr || bucketId || '').toLowerCase();
-    if (w.includes('5h') || w.includes('hour')) return { key: '5h', short: '5h', label: '5小时限额' };
-    if (w.includes('weekly') || w.includes('7d') || w.includes('week')) return { key: 'weekly', short: '7d', label: '每周限额' };
-    if (w.includes('daily') || w.includes('24h') || w.includes('day')) return { key: 'daily', short: '24h', label: '每日限额' };
-    return { key: w || 'quota', short: '', label: '周期限额' };
+    const rawW = String(windowStr || '').trim().toLowerCase();
+    const rawB = String(bucketId || '').trim().toLowerCase();
+    const combined = `${rawW} ${rawB}`.trim();
+    // 优先识别 Protobuf Duration 秒数及长周期(168h/24h)，避免裸匹配 'hour' 将 24_hours 或 168_hours 误标为 5h
+    const secMatch = rawW.match(/^(\d+(?:\.\d+)?)s$/);
+    if (secMatch) {
+      const secs = parseFloat(secMatch[1]);
+      if (secs >= 4 * 86400) return { key: 'weekly', short: '7d', label: '每周限额' };
+      if (secs >= 18 * 3600) return { key: 'daily', short: '24h', label: '每日限额' };
+      if (secs > 0) return { key: '5h', short: '5h', label: '5小时限额' };
+    }
+    if (/(?:weekly|7d|week|168\s*h|168_hours|周)/.test(combined)) {
+      return { key: 'weekly', short: '7d', label: '每周限额' };
+    }
+    if (/(?:daily|24\s*h|24_hours|(?:^|[^a-z])day(?:$|[^a-z])|每日)/.test(combined)) {
+      return { key: 'daily', short: '24h', label: '每日限额' };
+    }
+    if (/(?:5\s*h|5_hours|five_hour|5小时|hour)/.test(combined)) {
+      return { key: '5h', short: '5h', label: '5小时限额' };
+    }
+    return { key: rawW || rawB || 'quota', short: '', label: '周期限额' };
   }
 
   /**
@@ -3082,6 +3175,16 @@
           isResetPassed: false
         };
         poolMap.set(sKey, pool);
+      } else if (summaryGroup && Array.isArray(summaryGroup.buckets)) {
+        // 当服务端将同类共享池拆分为多个子组返回时，合并新桶而非丢弃后续分组的配额数据
+        pool.sourceType = 'quota_summary_and_configs';
+        const existingIds = new Set(pool.buckets.map(b => b.bucketId));
+        for (const nb of summaryGroup.buckets) {
+          if (nb && !existingIds.has(nb.bucketId)) {
+            pool.buckets.push({ ...nb });
+            existingIds.add(nb.bucketId);
+          }
+        }
       }
       return pool;
     };
@@ -3927,7 +4030,9 @@
     computeMedian,
     summarizeSpeedByModel,
     MAX_SPEED_SAMPLES_PER_MODEL,
+    formatLocalDateStr,
     calculateRequestApiCost,
+    calculateNetCacheSavedUSD,
     summarizeApiCost,
     calculateReferenceModelCost,
     resolveEffectivePlanStatus,

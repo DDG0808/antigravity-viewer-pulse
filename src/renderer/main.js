@@ -1,8 +1,17 @@
 (function () {
   'use strict';
 
-  const METER_VERSION = '0.9.0';
+  const METER_VERSION = '0.9.1';
   const LOOPBACK_HOST = [127, 0, 0, 1].join('.');
+
+  // 仅允许在本地回环页面、受控桌面协议或无 location 测试沙箱中挂载，阻止第三方外部页面加载 HUD
+  try {
+    const rawOrigin = String(globalThis.location?.origin || '').trim();
+    if (rawOrigin && rawOrigin !== 'null') {
+      const allowedOrigin = /^(?:https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?|vscode-file:\/\/.*|vscode-webview:\/\/.*|app:\/\/.*|file:\/\/.*|about:.*)$/i.test(rawOrigin);
+      if (!allowedOrigin) return;
+    }
+  } catch {}
 
   let inheritedState = null;
   try {
@@ -101,7 +110,7 @@
 
     // Context Budget (aligned 1:1 with meter-collector & preload cache)
     budgetScope: 'per_model', // 'per_model' | 'unified'
-    unifiedPref: { mode: 'default', limitTokens: 256000 },
+    unifiedPref: { mode: 'default', limitTokens: null },
     contextPreferencesMap: {}, // keyed by productKey / modelId -> { scope, productKey, modelId, label, mode, limitTokens }
     selectedProductKey: '',
     manualBudgetModelSelect: false,
@@ -111,6 +120,9 @@
     lastInjectedLimit: null,
     lastInjectedMode: null,
     lastAdoptedLimit: null,
+    injectedByProduct: new Map(),
+    adoptedByProduct: new Map(),
+    lastTurnStatus: null,
     unlockStatus: null,
 
     // Token Ledger & Subscription FX
@@ -160,6 +172,7 @@
   const controllers = new Set();
   const intervals = new Set();
   let toastTimer = null;
+  let autoUpdateTimer = null;
 
   function notify(msg) {
     const tEl = el('hudToast');
@@ -175,7 +188,11 @@
   }
 
   // ==================== Dual-Transport Backend Bridge ====================
-  const origFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
+  // 在全局单例上固化原始传输层引用，防止多次热重载叠加包装链
+  if (!globalThis.__agOrigFetch && typeof globalThis.fetch === 'function') {
+    globalThis.__agOrigFetch = globalThis.fetch.bind(globalThis);
+  }
+  const origFetch = globalThis.__agOrigFetch || (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null);
 
   function getLiveBridge() {
     const b = globalThis.__AGContextMeterLive;
@@ -338,7 +355,21 @@
       const triggers = document.querySelectorAll('[data-testid="model-selector-trigger"]');
       for (const node of triggers) {
         if (host.contains?.(node)) continue;
-        const rawText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (typeof node.getBoundingClientRect === 'function') {
+          const rect = node.getBoundingClientRect();
+          if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
+        }
+        let cleanSource = node;
+        if (typeof node.cloneNode === 'function') {
+          try {
+            const cloned = node.cloneNode(true);
+            if (typeof cloned.querySelectorAll === 'function') {
+              cloned.querySelectorAll('svg, [aria-hidden="true"], [data-badge], .badge').forEach((elNode) => elNode.remove?.());
+            }
+            cleanSource = cloned;
+          } catch {}
+        }
+        const rawText = String(cleanSource.textContent || '').replace(/\s+/g, ' ').trim();
         if (!rawText) continue;
         const effMatch = rawText.match(/\(([^)]+)\)\s*$/);
         const effort = effMatch ? effMatch[1].trim() : '';
@@ -539,9 +570,9 @@
 
   function getPreferenceForProduct(prod) {
     if (state.budgetScope === 'unified') {
-      return state.unifiedPref || { mode: 'default', limitTokens: 256000 };
+      return state.unifiedPref || { mode: 'default', limitTokens: null };
     }
-    if (!prod) return { mode: 'default', limitTokens: 256000 };
+    if (!prod) return { mode: 'default', limitTokens: null };
     const direct = state.contextPreferencesMap[prod.productKey] ||
       state.contextPreferencesMap[String(prod.productKey).toLowerCase()];
     if (direct) return direct;
@@ -550,49 +581,97 @@
         if (state.contextPreferencesMap[mKey]) return state.contextPreferencesMap[mKey];
       }
     }
-    return { mode: 'default', limitTokens: 256000 };
+    return { mode: 'default', limitTokens: null };
+  }
+
+  function computeProductMaxInput(prod) {
+    const targetProd = prod || getProductByKey(state.activeProductKey);
+    return Math.max(16384, Math.min(2097152, (targetProd.maxTokens || 1048576) - (targetProd.maxOutputTokens || 65536)));
   }
 
   function resolveEffectiveTokensForProduct(prod) {
     const targetProd = prod || getProductByKey(state.activeProductKey);
-    const maxInput = Math.max(16384, (targetProd.maxTokens || 1048576) - (targetProd.maxOutputTokens || 65536));
+    const maxInput = computeProductMaxInput(targetProd);
     const pref = getPreferenceForProduct(targetProd);
-    if (!pref || pref.mode === 'default') return Math.min(256000, maxInput);
+    if (!pref || pref.mode === 'default') {
+      // 当底座已解锁为动态跟随时，默认档遵循模型自身的动态预留预算而非死锁 256K
+      if (isBinaryDynamicUnlocked()) {
+        const reserve = Math.max(targetProd.maxOutputTokens || 65536, 40000);
+        const dynDef = (targetProd.maxTokens || 1048576) - reserve;
+        if (dynDef >= 16384) return Math.min(2097152, dynDef);
+      }
+      return Math.min(256000, maxInput);
+    }
     if (pref.mode === 'dynamic') return maxInput;
     const num = Number(pref.limitTokens);
-    if (Number.isFinite(num) && num >= 16384) return num;
-    return 256000;
+    if (Number.isFinite(num) && num >= 16384) return Math.min(2097152, Math.round(num));
+    return Math.min(256000, maxInput);
   }
 
   function buildPrefEntryFromSelection(rawVal, prod) {
     const targetProd = prod || getProductByKey(state.selectedProductKey || state.activeProductKey);
-    const maxInput = Math.max(16384, (targetProd.maxTokens || 1048576) - (targetProd.maxOutputTokens || 65536));
-    const alignedMax = budgetEngine.alignDownTo1K ? budgetEngine.alignDownTo1K(maxInput) : Math.floor(maxInput / 1024) * 1024;
+    const maxInput = computeProductMaxInput(targetProd);
 
-    if (rawVal === 'default' || Number(rawVal) === 256000) {
-      return { mode: 'default', limitTokens: 256000 };
+    // 严格区分「宿主默认模式 (不覆写请求字段)」与「固定 256,000 上限」
+    if (rawVal === 'default') {
+      return { mode: 'default', limitTokens: null };
     }
     if (rawVal === 'dynamic') {
       return { mode: 'dynamic', limitTokens: null };
     }
     if (rawVal === 'max') {
-      return { mode: 'fixed', limitTokens: alignedMax };
+      return { mode: 'fixed', limitTokens: maxInput };
     }
     const clamped = Math.max(16384, Math.min(2097152, Math.round(Number(rawVal) || 256000)));
     return { mode: 'fixed', limitTokens: clamped };
   }
 
+  function isBinaryUnlockSupportedOnHost() {
+    const u = state.unlockStatus;
+    if (!u) return true;
+    if (u.isPlatformSupported === false || u.status === 'unsupported') return false;
+    return true;
+  }
+
+  function isBinaryDynamicUnlocked() {
+    const u = state.unlockStatus;
+    if (!u || !isBinaryUnlockSupportedOnHost()) return false;
+    if (u.status === 'not_patched') return false;
+    return Boolean(u.configuredMode === 'dynamic' || u.unlocked === true || u.status === 'unlocked');
+  }
+
   function isBinaryUnlocked() {
     const u = state.unlockStatus;
-    if (!u) return false;
+    if (!u || !isBinaryUnlockSupportedOnHost()) return false;
+    if (u.status === 'not_patched') return false;
     return Boolean(
       u.unlocked ||
       u.patched ||
       u.configuredMode === 'dynamic' ||
       u.status === 'unlocked' ||
       u.status === 'patched' ||
+      u.status === 'patched_loaded' ||
       (u.configuredMode === 'fixed' && Number(u.configuredLimitTokens) > 256000)
     );
+  }
+
+  function doesSelectionNeedBinaryUnlock(entry, effTok) {
+    if (!isBinaryUnlockSupportedOnHost()) return false;
+    const u = state.unlockStatus;
+    if (entry.mode === 'dynamic') {
+      return !isBinaryDynamicUnlocked();
+    }
+    if (effTok > 256000) {
+      if (isBinaryDynamicUnlocked()) return false;
+      if (u && u.status !== 'not_patched' && u.configuredMode === 'fixed' && Number(u.configuredLimitTokens) >= effTok) {
+        return false;
+      }
+      if (u && (u.unlocked === true || u.patched === true) && !u.configuredMode) {
+        return false;
+      }
+      return true;
+    }
+    return false;
   }
 
   async function saveAndApplyProductBudget(rawVal, prodOverride = null, { autoUnlockBinary = false } = {}) {
@@ -664,7 +743,7 @@
     }
 
     const effTok = resolveEffectiveTokensForProduct(prod);
-    const needsUnlock = (entry.mode === 'dynamic' || effTok > 256000) && !isBinaryUnlocked();
+    const needsUnlock = doesSelectionNeedBinaryUnlock(entry, effTok);
 
     if (autoUnlockBinary && needsUnlock) {
       notify(`已设为 ${entry.mode === 'dynamic' ? '动态跟随' : formatK(effTok)}，正在自动解锁底座 256K 限制...`);
@@ -741,20 +820,42 @@
   function runBudgetTransformWithActiveFallback(payload, channel, urlOrProc = '', contentType = '') {
     if (typeof budgetEngine.transformOutgoingSendRequest !== 'function') return null;
     let tx = budgetEngine.transformOutgoingSendRequest(payload, buildInterceptorContext(channel, urlOrProc, contentType));
-    if (tx && tx.handled && tx.uninjectable && tx.reason === 'unidentifiable_request_model' && tx.cascadeId && state.activeProductKey) {
+    // 仅当前台窗口可见且该会话尚未绑定其他已知模型时，允许首轮新建会话回退至当前可见模型选择器
+    if (
+      tx &&
+      tx.handled &&
+      tx.uninjectable &&
+      tx.reason === 'unidentifiable_request_model' &&
+      tx.cascadeId &&
+      !state.conversationBindings[tx.cascadeId] &&
+      !document.hidden &&
+      state.activeProductKey
+    ) {
       tx = budgetEngine.transformOutgoingSendRequest(payload, buildInterceptorContext(channel, urlOrProc, contentType, tx.cascadeId));
     }
     return tx;
   }
 
-  function recordSuccessfulInjection(tx) {
+  function recordSuccessfulInjection(tx, dispatchId = null) {
     if (!tx || !tx.handled || tx.uninjectable) return;
-    const activeProd = getProductByKey(tx.productKey && tx.productKey !== '__unified__' ? tx.productKey : state.activeProductKey);
+    const prodKey = tx.productKey && tx.productKey !== '__unified__' ? tx.productKey : state.activeProductKey;
+    const activeProd = getProductByKey(prodKey);
     const targetLimit = resolveEffectiveTokensForProduct(activeProd);
-    state.lastInjectedMode = tx.sentMode;
-    state.lastInjectedLimit = tx.sentMode === 'fixed'
+    const effLimit = tx.sentMode === 'fixed'
       ? tx.sentLimitTokens
       : (tx.sentMode === 'dynamic' ? targetLimit : 256000);
+    state.lastInjectedMode = tx.sentMode;
+    state.lastInjectedLimit = effLimit;
+    if (prodKey) {
+      state.injectedByProduct.set(prodKey, {
+        dispatchId,
+        cascadeId: tx.cascadeId || null,
+        mode: tx.sentMode,
+        limitTokens: effLimit,
+        failed: false,
+        at: Date.now()
+      });
+    }
     if (tx.cascadeId && tx.productKey && tx.productKey !== '__unified__') {
       state.conversationBindings[tx.cascadeId] = {
         productKey: tx.productKey,
@@ -766,12 +867,32 @@
   }
 
   let interceptorInstalled = false;
-  let origWsSend = null;
-  let origXhrOpen = null;
-  let origXhrSend = null;
+  let lastDecoratorDispatch = null;
+
+  function isDuplicateOfRecentDecoratorDispatch(bodyInit, channel, urlStr, contentType) {
+    if (!lastDecoratorDispatch || (Date.now() - lastDecoratorDispatch.at) > 450) return false;
+    try {
+      const probe = budgetEngine.transformOutgoingSendRequest?.(bodyInit, {
+        ...buildInterceptorContext(channel, urlStr, contentType),
+        scopeMode: 'unified',
+        unifiedPreference: { mode: 'default', limitTokens: null }
+      });
+      if (probe && probe.cascadeId && lastDecoratorDispatch.cascadeId && probe.cascadeId !== lastDecoratorDispatch.cascadeId) {
+        return false;
+      }
+      lastDecoratorDispatch = null;
+      return true;
+    } catch {
+      lastDecoratorDispatch = null;
+      return true;
+    }
+  }
 
   function tryRewriteSendBody(bodyInit, channel = 'fetch', urlStr = '', contentType = '') {
     try {
+      if (isDuplicateOfRecentDecoratorDispatch(bodyInit, channel, urlStr, contentType)) {
+        return bodyInit;
+      }
       const tx = runBudgetTransformWithActiveFallback(bodyInit, channel, urlStr, contentType);
       if (tx && tx.handled) {
         recordSuccessfulInjection(tx);
@@ -792,10 +913,30 @@
         if (!reqObj || typeof reqObj !== 'object') return null;
         const tx = runBudgetTransformWithActiveFallback(reqObj, channel, 'SendUserCascadeMessage');
         if (tx && tx.handled && !tx.uninjectable) {
-          recordSuccessfulInjection(tx);
-          return { dispatchId: `pulse_${Date.now()}` };
+          const dispatchId = `pulse_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          lastDecoratorDispatch = {
+            dispatchId,
+            cascadeId: tx.cascadeId || reqObj.cascadeId || null,
+            productKey: tx.productKey || state.activeProductKey || null,
+            at: Date.now()
+          };
+          recordSuccessfulInjection(tx, dispatchId);
+          return { dispatchId };
         }
         return null;
+      };
+
+      globalThis.__AG_METER_ON_SEND_RESULT__ = (info = {}) => {
+        if (!info || info.ok !== false) return;
+        const failedId = info.dispatchId || null;
+        if (failedId) {
+          for (const [pk, rec] of state.injectedByProduct.entries()) {
+            if (rec && rec.dispatchId === failedId) {
+              state.injectedByProduct.set(pk, { ...rec, failed: true });
+            }
+          }
+          renderBudgetSpace();
+        }
       };
 
       if (origFetch) {
@@ -803,36 +944,69 @@
           const urlStr = typeof input === 'string' ? input : (input?.url || '');
           const isSendRpc = (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) ||
             urlStr.includes('SendUserCascadeMessage');
-          if (isSendRpc && init && init.body) {
-            const hdrs = init.headers;
-            const ct = typeof hdrs?.get === 'function'
-              ? (hdrs.get('content-type') || '')
-              : (hdrs?.['content-type'] || hdrs?.['Content-Type'] || '');
-            init = { ...init, body: tryRewriteSendBody(init.body, 'fetch', urlStr, ct) };
+          if (isSendRpc) {
+            if (init && init.body) {
+              const hdrs = init.headers;
+              const ct = typeof hdrs?.get === 'function'
+                ? (hdrs.get('content-type') || '')
+                : (hdrs?.['content-type'] || hdrs?.['Content-Type'] || '');
+              init = { ...init, body: tryRewriteSendBody(init.body, 'fetch', urlStr, ct) };
+            } else if (input && typeof input === 'object' && typeof input.clone === 'function' && typeof input.arrayBuffer === 'function') {
+              try {
+                const ct = typeof input.headers?.get === 'function' ? (input.headers.get('content-type') || '') : '';
+                const rawBytes = new Uint8Array(await input.clone().arrayBuffer());
+                if (rawBytes.length > 0) {
+                  const nextBytes = tryRewriteSendBody(rawBytes, 'fetch', urlStr, ct);
+                  if (nextBytes !== rawBytes && typeof globalThis.Request === 'function') {
+                    input = new globalThis.Request(input, { body: nextBytes });
+                  }
+                }
+              } catch {}
+            }
           }
           return origFetch(input, init);
         };
       }
 
       if (typeof globalThis.WebSocket === 'function' && globalThis.WebSocket.prototype?.send) {
-        origWsSend = globalThis.WebSocket.prototype.send;
+        if (!globalThis.__agOrigWsSend) {
+          globalThis.__agOrigWsSend = globalThis.WebSocket.prototype.send;
+        }
+        const rawWsSend = globalThis.__agOrigWsSend;
         globalThis.WebSocket.prototype.send = function (data) {
           const next = tryRewriteSendBody(data, 'ws_frame', this?.url || '');
-          return origWsSend.call(this, next);
+          return rawWsSend.call(this, next);
         };
       }
 
       if (typeof globalThis.XMLHttpRequest === 'function' && globalThis.XMLHttpRequest.prototype) {
-        origXhrOpen = globalThis.XMLHttpRequest.prototype.open;
-        origXhrSend = globalThis.XMLHttpRequest.prototype.send;
+        if (!globalThis.__agOrigXhrOpen) globalThis.__agOrigXhrOpen = globalThis.XMLHttpRequest.prototype.open;
+        if (!globalThis.__agOrigXhrSend) globalThis.__agOrigXhrSend = globalThis.XMLHttpRequest.prototype.send;
+        if (!globalThis.__agOrigXhrSetHeader && globalThis.XMLHttpRequest.prototype.setRequestHeader) {
+          globalThis.__agOrigXhrSetHeader = globalThis.XMLHttpRequest.prototype.setRequestHeader;
+        }
+        const rawXhrOpen = globalThis.__agOrigXhrOpen;
+        const rawXhrSend = globalThis.__agOrigXhrSend;
+        const rawXhrSetHeader = globalThis.__agOrigXhrSetHeader;
         globalThis.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
           this.__pulseUrl = String(url || '');
-          return origXhrOpen.call(this, method, url, ...rest);
+          this.__pulseCt = '';
+          return rawXhrOpen.call(this, method, url, ...rest);
         };
+        if (rawXhrSetHeader) {
+          globalThis.XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+            if (String(name || '').toLowerCase() === 'content-type') {
+              this.__pulseCt = String(value || '');
+            }
+            return rawXhrSetHeader.call(this, name, value);
+          };
+        }
         globalThis.XMLHttpRequest.prototype.send = function (body) {
           const u = this.__pulseUrl || '';
-          const next = u.includes('SendUserCascadeMessage') ? tryRewriteSendBody(body, 'xhr', u) : body;
-          return origXhrSend.call(this, next);
+          const isSend = (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(u)) ||
+            u.includes('SendUserCascadeMessage');
+          const next = isSend ? tryRewriteSendBody(body, 'xhr', u, this.__pulseCt || '') : body;
+          return rawXhrSend.call(this, next);
         };
       }
     } catch {}
@@ -843,10 +1017,20 @@
     interceptorInstalled = false;
     try {
       if (origFetch) globalThis.fetch = origFetch;
-      if (origWsSend && globalThis.WebSocket?.prototype) globalThis.WebSocket.prototype.send = origWsSend;
-      if (origXhrOpen && globalThis.XMLHttpRequest?.prototype) globalThis.XMLHttpRequest.prototype.open = origXhrOpen;
-      if (origXhrSend && globalThis.XMLHttpRequest?.prototype) globalThis.XMLHttpRequest.prototype.send = origXhrSend;
+      if (globalThis.__agOrigWsSend && globalThis.WebSocket?.prototype) {
+        globalThis.WebSocket.prototype.send = globalThis.__agOrigWsSend;
+      }
+      if (globalThis.__agOrigXhrOpen && globalThis.XMLHttpRequest?.prototype) {
+        globalThis.XMLHttpRequest.prototype.open = globalThis.__agOrigXhrOpen;
+      }
+      if (globalThis.__agOrigXhrSetHeader && globalThis.XMLHttpRequest?.prototype) {
+        globalThis.XMLHttpRequest.prototype.setRequestHeader = globalThis.__agOrigXhrSetHeader;
+      }
+      if (globalThis.__agOrigXhrSend && globalThis.XMLHttpRequest?.prototype) {
+        globalThis.XMLHttpRequest.prototype.send = globalThis.__agOrigXhrSend;
+      }
       delete globalThis.__AG_METER_ON_SEND_MESSAGE__;
+      delete globalThis.__AG_METER_ON_SEND_RESULT__;
     } catch {}
   }
 
@@ -896,7 +1080,13 @@
   // ==================== Settings Persistence (Exact meter-collector Schema) ====================
   async function persistUiAndPlanSettings() {
     const isZero = state.subAcqMode === 'free_edu' || state.subAcqMode === 'free_tier';
-    const acqMap = { paid_pro: 'normal_paid', paid_ultra: 'normal_paid', free_edu: 'student_offer', free_tier: 'family_sharing' };
+    const acqMap = {
+      paid_pro: 'normal_paid',
+      paid_ultra: 'normal_paid',
+      family_share: 'family_sharing',
+      free_edu: 'student_offer',
+      free_tier: 'free_tier'
+    };
     const payload = {
       panelLanguage: state.panelLang,
       autoCheckUpdate: state.autoCheckUpdate,
@@ -970,7 +1160,8 @@
     if (Number.isFinite(paidNum) && paidNum >= 0) state.subPrice = paidNum;
     if (plan.acquisitionMode) state.subAcqMode = plan.acquisitionMode;
     else if (plan.acquisitionSource === 'student_offer') state.subAcqMode = 'free_edu';
-    else if (plan.acquisitionSource === 'family_sharing') state.subAcqMode = 'free_tier';
+    else if (plan.acquisitionSource === 'family_sharing') state.subAcqMode = 'family_share';
+    else if (plan.acquisitionSource === 'free_tier') state.subAcqMode = 'free_tier';
   }
 
   async function restoreSettingsFromHost() {
@@ -991,10 +1182,20 @@
       });
       if (res?.ok) hydrateSettingsResponse(res);
     } catch {}
+    if (inheritedState) applyInheritedState(inheritedState);
     applyThemeAndChroma();
     applyStaticTranslations();
     el('toggleAutoUpdate')?.classList.toggle('on', state.autoCheckUpdate);
     renderAll();
+    if (!state.disposed && state.autoCheckUpdate !== false) {
+      clearTimeout(autoUpdateTimer);
+      autoUpdateTimer = setTimeout(() => {
+        if (!state.disposed && state.autoCheckUpdate !== false) {
+          void checkReleaseUpdate({ silent: true, force: false });
+        }
+      }, 4500);
+      autoUpdateTimer?.unref?.();
+    }
   }
 
   // ==================== Real-Time Poll, Speed Telemetry & Quota ====================
@@ -1099,36 +1300,54 @@
     const tid = setTimeout(() => ctrl.abort(), 10000);
     try {
       // On initial load of a conversation, fetch full metadata (offset 0) so we get ALL session calls & speed telemetry!
-      const offset = state.sessionCallsMap.size === 0 ? 0 : Math.max(0, state.count - 6);
-      const res = await origFetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Connect-Protocol-Version': '1',
-          'x-codeium-csrf-token': csrf
-        },
-        body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: offset, includeMessages: false }),
-        signal: ctrl.signal
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      let offset = state.sessionCallsMap.size === 0 ? 0 : Math.max(0, state.count - 6);
+      const fetchWithOffset = async (off) => {
+        const r = await origFetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
+            'x-codeium-csrf-token': csrf
+          },
+          body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: off, includeMessages: false }),
+          signal: ctrl.signal
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return await r.json();
+      };
+      let data = await fetchWithOffset(offset);
       if (gen !== state.generation || state.disposed) return;
-      const rows = Array.isArray(data?.generatorMetadata) ? data.generatorMetadata : [];
-      state.count = rows.length ? offset + rows.length : state.count;
+      let rows = Array.isArray(data?.generatorMetadata) ? data.generatorMetadata : [];
+      // 会话消息撤回或编辑截断后 offset 可能超出新总长，自动归零重拉完整轨迹
+      if (rows.length === 0 && offset > 0) {
+        offset = 0;
+        state.count = 0;
+        state.sessionCallsMap.clear();
+        data = await fetchWithOffset(0);
+        if (gen !== state.generation || state.disposed) return;
+        rows = Array.isArray(data?.generatorMetadata) ? data.generatorMetadata : [];
+      }
+      state.count = rows.length ? offset + rows.length : (offset === 0 ? 0 : state.count);
 
       const finalBatch = [];
+      let lastParsedStatus = null;
       for (let i = 0; i < rows.length; i++) {
         const call = typeof core.parseGeneratorCall === 'function'
           ? core.parseGeneratorCall(rows[i], id, 'desktop', { cascadeModelConfigs: state.cascadeModelConfigs })
           : null;
         if (call && call.callId) {
           state.sessionCallsMap.set(call.callId, call);
-          if (call.status === 'final' && !state.pendingFinalCalls.has(call.callId)) {
-            state.pendingFinalCalls.set(call.callId, true);
-            finalBatch.push(call);
+          lastParsedStatus = call.status || lastParsedStatus;
+          if (call.status === 'final') {
+            const sig = `${call.status}:${call.outputTokens || 0}:${call.tps ?? ''}`;
+            if (state.pendingFinalCalls.get(call.callId) !== sig) {
+              state.pendingFinalCalls.set(call.callId, sig);
+              finalBatch.push({ call, sig });
+            }
           }
         }
       }
+      state.lastTurnStatus = lastParsedStatus;
 
       state.sessionCalls = Array.from(state.sessionCallsMap.values());
       state.sessionCostTotal = state.sessionCalls.reduce((s, c) => s + (c.isPriced ? Number(c.costUSD || 0) : 0), 0);
@@ -1136,13 +1355,34 @@
       state.lastRoundCost = lastPriced ? Number(lastPriced.costUSD) : 0;
 
       if (finalBatch.length > 0) {
-        void callBackend({
-          ipcFn: typeof globalThis.contextMeterAPI?.recordCalls === 'function'
-            ? () => globalThis.contextMeterAPI.recordCalls(finalBatch)
-            : null,
-          liveRoute: '/record-calls',
-          body: { calls: finalBatch }
-        }).catch(() => {});
+        void (async () => {
+          for (let start = 0; start < finalBatch.length; start += 250) {
+            const slice = finalBatch.slice(start, start + 250);
+            const callsChunk = slice.map((item) => item.call);
+            try {
+              const r = await callBackend({
+                ipcFn: typeof globalThis.contextMeterAPI?.recordCalls === 'function'
+                  ? () => globalThis.contextMeterAPI.recordCalls(callsChunk)
+                  : null,
+                liveRoute: '/record-calls',
+                body: { calls: callsChunk }
+              });
+              if (r && r.ok === false) {
+                for (const item of slice) {
+                  if (state.pendingFinalCalls.get(item.call.callId) === item.sig) {
+                    state.pendingFinalCalls.delete(item.call.callId);
+                  }
+                }
+              }
+            } catch {
+              for (const item of slice) {
+                if (state.pendingFinalCalls.get(item.call.callId) === item.sig) {
+                  state.pendingFinalCalls.delete(item.call.callId);
+                }
+              }
+            }
+          }
+        })();
       }
 
       let latestSummary = null;
@@ -1165,6 +1405,10 @@
         state.latest = latestSummary;
         if (Number(latestSummary.budget) > 0) {
           state.lastAdoptedLimit = Number(latestSummary.budget);
+          const pk = state.activeProductKey || groupProductSafe({ modelId: latestSummary.modelId || latestSummary.model, label: latestSummary.model }).productKey;
+          if (pk) {
+            state.adoptedByProduct.set(pk, { budget: Number(latestSummary.budget), cascadeId: id, at: Date.now() });
+          }
         }
         state.isStreaming = latestSummary.status === 'pending';
       } else {
@@ -1491,7 +1735,12 @@
         liveRoute: '/context-unlock-status',
         body: {}
       });
-      if (uRes?.ok && uRes.data) state.unlockStatus = uRes.data;
+      if (uRes?.ok && uRes.data) {
+        state.unlockStatus = uRes.data;
+        if (uRes.data.status === 'patched_pending_restart') {
+          state.restartRequired = true;
+        }
+      }
     } catch {}
 
     try {
@@ -1556,6 +1805,11 @@
   }
 
   function computeCallCacheSavedUSD(call) {
+    if (typeof core.calculateNetCacheSavedUSD === 'function') {
+      try {
+        return core.calculateNetCacheSavedUSD(call);
+      } catch (_) {}
+    }
     const inp = Math.max(0, Number(call?.inputTokens || 0));
     const cap = Math.max(0, Number(call?.cacheReadTokens ?? call?.cacheTokens ?? 0));
     if (cap <= 0) return 0;
@@ -1568,10 +1822,11 @@
           ...call,
           inputTokens: inp + cap,
           cacheTokens: 0,
-          cacheReadTokens: 0
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0
         });
-        if (uncached?.isPriced && Number(uncached.costUSD) >= actualCost) {
-          return Math.max(0, Number(uncached.costUSD) - actualCost);
+        if (uncached?.isPriced) {
+          return Number(uncached.costUSD) - actualCost;
         }
       } catch (_) {}
     }
@@ -1724,7 +1979,7 @@
     }
     if (el('heroPctTxt')) el('heroPctTxt').textContent = `${pct.toFixed(1)}%`;
     if (el('heroSourceMode')) {
-      el('heroSourceMode').textContent = latest ? (latest.estimated ? t('estimatedMode') : t('actualMeasured')) : '待机';
+      el('heroSourceMode').textContent = latest ? (latest.estimated ? t('estimatedMode') : t('actualMeasured')) : t('idleMode');
     }
     if (el('sessionCostTxt')) {
       el('sessionCostTxt').textContent = `本轮 $${state.lastRoundCost.toFixed(3)} · 会话 $${state.sessionCostTotal.toFixed(2)}`;
@@ -1786,7 +2041,8 @@
       if (tipCacheEl) { tipCacheEl.textContent = `${sessPct.toFixed(1)}% · 首轮建库`; tipCacheEl.style.color = 'var(--accent-2)'; }
     } else {
       const sessColor = sessPct >= 50 ? 'var(--emerald)' : (sessPct >= 20 ? 'var(--amber)' : 'var(--fg-2)');
-      const savedFmt = cacheStats.sessSavedUSD >= 0.01 ? `$${cacheStats.sessSavedUSD.toFixed(2)}` : `$${cacheStats.sessSavedUSD.toFixed(3)}`;
+      const absSaved = Math.abs(cacheStats.sessSavedUSD);
+      const savedFmt = `${cacheStats.sessSavedUSD < 0 ? '-' : ''}$${absSaved >= 0.01 ? absSaved.toFixed(2) : absSaved.toFixed(3)}`;
       if (heroCachePctEl) { heroCachePctEl.textContent = `${sessPct.toFixed(1)}%`; heroCachePctEl.style.color = sessColor; }
       if (heroCacheSubEl) heroCacheSubEl.textContent = `· 省 ${savedFmt}`;
       if (cacheBarFillEl) cacheBarFillEl.style.width = `${Math.min(100, Math.max(4, sessPct)).toFixed(1)}%`;
@@ -1844,13 +2100,14 @@
     if (tpsTag) {
       if (state.isStreaming) {
         tpsTag.className = 'tag';
-        tpsTag.textContent = state.liveTps != null ? '流式生成中…' : '生成测算中…';
+        tpsTag.textContent = state.liveTps != null ? t('streamingNow') : t('measuringNow');
       } else if (state.liveTps != null) {
-        tpsTag.className = 'tag';
-        tpsTag.textContent = '本轮实测';
+        const isLastFinal = !state.lastTurnStatus || state.lastTurnStatus === 'final';
+        tpsTag.className = isLastFinal ? 'tag' : 'tag neutral';
+        tpsTag.textContent = isLastFinal ? t('measuredRound') : t('measuredHistory');
       } else {
         tpsTag.className = 'tag neutral';
-        tpsTag.textContent = '等待生成';
+        tpsTag.textContent = t('waitingGen');
       }
     }
     drawStreamWaveform(el('waveCanvas'), host, state.wavePoints, state.isStreaming);
@@ -1877,16 +2134,16 @@
   function classifyBucketWindow(b, nowMs = Date.now()) {
     const raw = [b?.windowKey, b?.windowShort, b?.window, b?.windowLabel, b?.bucketId].filter(Boolean).join(' ').toLowerCase();
     if (/5h|hour|5小时/.test(raw)) return { kind: '5h', tag: '5h', order: 1 };
-    if (/weekly|7d|week|168h|周/.test(raw)) return { kind: 'weekly', tag: '周', order: 2 };
-    if (/daily|24h|day|日/.test(raw)) return { kind: 'daily', tag: '日', order: 3 };
+    if (/weekly|7d|week|168h|168_hours|周/.test(raw)) return { kind: 'weekly', tag: t('tagWeekShort'), order: 2 };
+    if (/daily|24h|24_hours|day|日/.test(raw)) return { kind: 'daily', tag: t('tagDayShort'), order: 3 };
     const rMs = typeof b?.resetAtMs === 'number' ? b.resetAtMs : (b?.resetTimeIso ? Date.parse(b.resetTimeIso) : NaN);
     if (Number.isFinite(rMs) && (rMs - nowMs) > 12 * 3600 * 1000) {
-      return { kind: 'weekly', tag: '周', order: 2 };
+      return { kind: 'weekly', tag: t('tagWeekShort'), order: 2 };
     }
     if (Number.isFinite(rMs) && (rMs - nowMs) > 0) {
       return { kind: '5h', tag: '5h', order: 1 };
     }
-    return { kind: 'other', tag: '额度', order: 4 };
+    return { kind: 'other', tag: t('tagQuotaShort'), order: 4 };
   }
 
   function shortenPoolTitle(rawTitle, poolKey = '') {
@@ -2032,7 +2289,7 @@
     if (grid) {
       const colCount = Math.max(1, Math.min(4, pools.length));
       grid.style.gridTemplateColumns = `repeat(${colCount}, 1fr)`;
-      grid.innerHTML = pools.map((p, idx) => {
+      const nextGridHtml = pools.map((p, idx) => {
         const isSel = p.key === primary.key;
         if (p.noPermission) {
           return `
@@ -2095,12 +2352,33 @@
           </div>`;
       }).join('');
 
-      qsa('.pool-mini-card', grid).forEach(card => {
-        card.addEventListener('click', () => {
-          state.selectedPoolKey = card.dataset.pkey;
-          renderQuotaSection();
+      // 仅在渲染签名变化时更新 DOM 并使用容器级事件委托，防止每秒心跳销毁点击中的节点
+      if (!grid.__pulseDelegated) {
+        grid.__pulseDelegated = true;
+        grid.addEventListener('click', (ev) => {
+          let cur = ev?.target || null;
+          if (cur && typeof cur.closest === 'function') {
+            const hit = cur.closest('.pool-mini-card');
+            if (hit && hit.dataset?.pkey) {
+              state.selectedPoolKey = hit.dataset.pkey;
+              renderQuotaSection();
+              return;
+            }
+          }
+          while (cur && cur !== grid) {
+            if (cur.dataset?.pkey) {
+              state.selectedPoolKey = cur.dataset.pkey;
+              renderQuotaSection();
+              return;
+            }
+            cur = cur.parentNode;
+          }
         });
-      });
+      }
+      if (grid.__lastHtml !== nextGridHtml) {
+        grid.innerHTML = nextGridHtml;
+        grid.__lastHtml = nextGridHtml;
+      }
     }
   }
 
@@ -2150,58 +2428,98 @@
     }
 
     const selProd = getProductByKey(state.selectedProductKey);
-    const maxInput = Math.max(16384, (selProd.maxTokens || 1048576) - (selProd.maxOutputTokens || 65536));
-    const alignedMax = budgetEngine.alignDownTo1K ? budgetEngine.alignDownTo1K(maxInput) : maxInput;
+    const maxInput = computeProductMaxInput(selProd);
     const pref = getPreferenceForProduct(selProd);
     const curVal = resolveEffectiveTokensForProduct(selProd);
 
     if (el('bModelTitle')) el('bModelTitle').textContent = selProd.label;
     if (el('bSpecWin')) el('bSpecWin').textContent = (selProd.maxTokens || 0).toLocaleString();
     if (el('bSpecOut')) el('bSpecOut').textContent = (selProd.maxOutputTokens || 0).toLocaleString();
-    if (el('bSpecMax')) el('bSpecMax').textContent = alignedMax.toLocaleString();
+    if (el('bSpecMax')) el('bSpecMax').textContent = maxInput.toLocaleString();
+    if (el('budgetHintRange')) {
+      el('budgetHintRange').textContent = `拖动滑轨或输入精确预算 (16,384 – ${maxInput.toLocaleString()})`;
+    }
 
     const slider = el('budgetSlider');
     const numInput = el('exactTokenInput');
-    if (slider && shadow.activeElement !== slider) slider.value = String(curVal);
-    if (numInput && shadow.activeElement !== numInput) numInput.value = String(curVal);
+    if (slider) {
+      slider.setAttribute('max', String(maxInput));
+      slider.max = String(maxInput);
+      if (shadow.activeElement !== slider) slider.value = String(Math.min(curVal, maxInput));
+    }
+    if (numInput) {
+      numInput.setAttribute('max', String(maxInput));
+      numInput.max = String(maxInput);
+      if (shadow.activeElement !== numInput) numInput.value = String(curVal);
+    }
 
     qsa('#detentBtns button').forEach(b => {
       const det = b.dataset.det;
       let match = false;
-      if (det === 'default') match = !pref || pref.mode === 'default' || (pref.mode === 'fixed' && curVal === 256000);
+      if (det === 'default') match = !pref || pref.mode === 'default';
       else if (det === 'dynamic') match = pref?.mode === 'dynamic';
-      else if (det === 'max') match = pref?.mode === 'fixed' && Math.abs(curVal - alignedMax) <= 1024;
+      else if (det === 'max') match = pref?.mode === 'fixed' && Math.abs(curVal - maxInput) <= 1024;
       else match = pref?.mode === 'fixed' && Number(det) === curVal;
       b.classList.toggle('on', match);
     });
 
     if (el('pipeSaved')) {
-      el('pipeSaved').textContent = pref?.mode === 'dynamic' ? `DYN (${formatK(curVal)})` : curVal.toLocaleString();
+      el('pipeSaved').textContent = pref?.mode === 'dynamic'
+        ? `DYN (${formatK(curVal)})`
+        : (!pref || pref.mode === 'default' ? `默认 (${formatK(curVal)})` : curVal.toLocaleString());
     }
+    const scopedInj = state.budgetScope === 'unified'
+      ? (state.lastInjectedLimit ? { mode: state.lastInjectedMode, limitTokens: state.lastInjectedLimit, failed: false } : null)
+      : (state.injectedByProduct.get(selProd.productKey) || null);
     if (el('pipeSent')) {
-      el('pipeSent').textContent = state.lastInjectedLimit
-        ? (state.lastInjectedMode === 'dynamic' ? 'DYN 放行' : state.lastInjectedLimit.toLocaleString())
-        : '下一条消息注入';
+      if (scopedInj?.failed) {
+        el('pipeSent').textContent = '发送失败';
+      } else if (scopedInj?.limitTokens) {
+        el('pipeSent').textContent = scopedInj.mode === 'dynamic'
+          ? 'DYN 放行'
+          : (scopedInj.mode === 'default' ? '宿主默认' : scopedInj.limitTokens.toLocaleString());
+      } else {
+        el('pipeSent').textContent = '下一条消息注入';
+      }
     }
+    const scopedAdp = state.adoptedByProduct.get(selProd.productKey) ||
+      (selProd.productKey === state.activeProductKey && (state.lastAdoptedLimit || state.latest?.budget)
+        ? { budget: Number(state.lastAdoptedLimit || state.latest?.budget) }
+        : null);
     if (el('pipeAdopted')) {
-      const adopted = state.lastAdoptedLimit || state.latest?.budget || null;
+      const adopted = scopedAdp?.budget || null;
       el('pipeAdopted').textContent = adopted ? `${Number(adopted).toLocaleString()} ✓` : '待会话返回';
     }
 
     const binBadge = el('binaryUnlockBadge');
+    const restoreBtn = el('btnRestoreBin');
+    const applyBtn = el('btnApplyBudget');
+    const unlockSupported = isBinaryUnlockSupportedOnHost();
+    if (restoreBtn) restoreBtn.hidden = !unlockSupported;
+    if (applyBtn) {
+      applyBtn.textContent = unlockSupported ? t('saveAndSyncBin') : t('savePrefOnly');
+    }
     if (binBadge) {
-      if (state.unlockStatus?.status === 'patched_pending_restart') {
+      if (!unlockSupported) {
+        binBadge.className = 'tag neutral';
+        binBadge.textContent = t('unlockReadyInject');
+      } else if (state.unlockStatus?.status === 'patched_pending_restart') {
         binBadge.className = 'tag warn';
-        binBadge.textContent = '底座已修补 · 待重启生效';
+        binBadge.textContent = t('unlockPendingRestart');
+      } else if (isBinaryDynamicUnlocked()) {
+        binBadge.className = 'tag';
+        binBadge.textContent = t('unlockDynamicActive');
       } else if (isBinaryUnlocked()) {
         binBadge.className = 'tag';
-        binBadge.textContent = '底座已解锁 DYN';
+        binBadge.textContent = state.unlockStatus?.configuredLimitTokens
+          ? `底座固定 ${formatK(state.unlockStatus.configuredLimitTokens)}`
+          : t('unlockDynamicActive');
       } else if (state.unlockStatus) {
         binBadge.className = 'tag warn';
-        binBadge.textContent = '官方默认 256K 锁 (点右下解锁)';
+        binBadge.textContent = t('unlockStock256k');
       } else {
         binBadge.className = 'tag neutral';
-        binBadge.textContent = '请求级注入就绪';
+        binBadge.textContent = t('unlockReadyInject');
       }
     }
   }
@@ -2326,8 +2644,15 @@
 
     const ledgerPromptTotal = totalInp + totalCap;
     const ledgerHitPct = ledgerPromptTotal > 0 ? (totalCap / ledgerPromptTotal) * 100 : null;
-    const saveDeltaPerM = state.valuationMode === 'claude-opus-4-6-thinking' ? (4.00 - 0.20) : (1.50 - 0.075);
-    const ledgerSavedUSD = (totalCap / 1e6) * saveDeltaPerM;
+    const valModelForSave = state.valuationMode === 'claude-opus-4-6-thinking' ? 'claude-opus-5-5' : 'gemini-4-hydrogen';
+    const ledgerSavedUSD = typeof core.calculateNetCacheSavedUSD === 'function'
+      ? core.calculateNetCacheSavedUSD({
+          model: valModelForSave,
+          inputTokens: totalInp,
+          cacheReadTokens: totalCap,
+          outputTokens: totalOut
+        })
+      : ((totalCap / 1e6) * (state.valuationMode === 'claude-opus-4-6-thinking' ? (4.00 - 0.20) : (1.50 - 0.075)));
     if (el('ledgerCacheSummary')) {
       el('ledgerCacheSummary').textContent = ledgerHitPct !== null
         ? `缓存命中 ${ledgerHitPct.toFixed(1)}% · 累计省 $${ledgerSavedUSD.toFixed(2)}`
@@ -2365,8 +2690,11 @@
     const effPrice = isFreeMode ? 0 : Number(state.subPrice || 0);
     const cnyMonthly = typeof core.convertToCNY === 'function'
       ? Number(core.convertToCNY(effPrice, state.subCurrency) || 0)
-      : effPrice * 7.2;
-    const usdMonthly = cnyMonthly / 7.22;
+      : effPrice * 7.22;
+    // USD 订阅直接使用原值计算美元月费，避免经 CNY 中转二次换算引入汇率舍入偏差
+    const usdMonthly = String(state.subCurrency || '').toUpperCase() === 'USD'
+      ? effPrice
+      : (cnyMonthly / 7.22);
     const sym = (core.CURRENCY_SYMBOLS && core.CURRENCY_SYMBOLS[state.subCurrency]) || state.subCurrency;
 
     if (el('roiMultTxt')) {
@@ -2415,22 +2743,29 @@
       if (dailyWrap) dailyWrap.style.display = 'none';
       if (altSvg) altSvg.style.display = 'block';
       const bucketMap = new Map();
-      for (let idx = 0; idx < paddedSeries.length; idx++) {
-        const item = paddedSeries[idx];
+      // 年度与全周期累计视图使用完整历史天数聚合，避免被 252 天分页切片截断早期记录
+      const sourceSeries = (state.heatMode === 'yearly' || state.heatMode === 'cum') && days.length > 0
+        ? days
+        : paddedSeries;
+      if ((state.heatMode === 'yearly' || state.heatMode === 'cum') && days.length > 0 && el('hmPeriodLbl')) {
+        el('hmPeriodLbl').textContent = `${days[0].date} – ${days[days.length - 1].date}`;
+      }
+      for (let idx = 0; idx < sourceSeries.length; idx++) {
+        const item = sourceSeries[idx];
         const key = state.heatMode === 'weekly'
           ? `W${Math.floor(idx / 7) + 1}`
           : state.heatMode === 'monthly'
             ? item.date.slice(0, 7)
             : state.heatMode === 'yearly'
               ? item.date.slice(0, 4)
-              : item.date.slice(5);
+              : item.date;
         const cur = bucketMap.get(key) || { shortLabel: key.slice(-5), total: 0, date: key };
         cur.total += item.total;
         bucketMap.set(key, cur);
       }
       renderAlternateHistorySvg(altSvg, state.heatMode, Array.from(bucketMap.values()), (b) => {
         if (hoverEl) hoverEl.textContent = `${b.date} · 合计 ${formatCompactTokens(b.total)} tok`;
-      });
+      }, state.panelLang);
     }
   }
 
@@ -2569,7 +2904,8 @@
       (clickedModelKey) => {
         state.duelFocusModel = clickedModelKey;
         renderSpeedSheet();
-      }
+      },
+      state.panelLang
     );
   }
 
@@ -2689,6 +3025,12 @@
   el('dynamicIsland')?.addEventListener('click', () => {
     toggleHud(!state.hudOpen);
   });
+  el('dynamicIsland')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault?.();
+      toggleHud(!state.hudOpen);
+    }
+  });
 
   el('btnHideHud')?.addEventListener('click', () => toggleHud(false));
 
@@ -2721,6 +3063,7 @@
     btn.addEventListener('click', () => {
       state.panelLang = normalizePulseLang(btn.dataset.plang);
       applyStaticTranslations();
+      renderAll();
       void persistUiAndPlanSettings();
     });
   });
@@ -2812,21 +3155,27 @@
     });
   });
 
+  const resolveCurrentBudgetInputSelection = (selProd) => {
+    const curPref = getPreferenceForProduct(selProd);
+    const curEff = resolveEffectiveTokensForProduct(selProd);
+    const typedNum = Number(el('exactTokenInput')?.value);
+    if (Number.isFinite(typedNum) && typedNum >= 16384 && Math.round(typedNum) !== curEff) {
+      return Math.round(typedNum);
+    }
+    if (curPref?.mode === 'dynamic') return 'dynamic';
+    if (!curPref || curPref.mode === 'default') return 'default';
+    return Number.isFinite(typedNum) && typedNum >= 16384 ? Math.round(typedNum) : Number(curPref.limitTokens || 256000);
+  };
+
   el('btnSaveOnly')?.addEventListener('click', async () => {
     const selProd = getProductByKey(state.selectedProductKey || state.activeProductKey);
-    const curPref = getPreferenceForProduct(selProd);
-    const rawVal = curPref?.mode === 'dynamic'
-      ? 'dynamic'
-      : (curPref?.mode === 'default' ? 'default' : Number(el('exactTokenInput')?.value || 256000));
+    const rawVal = resolveCurrentBudgetInputSelection(selProd);
     await saveAndApplyProductBudget(rawVal, selProd, { autoUnlockBinary: false });
   });
 
   el('btnApplyBudget')?.addEventListener('click', async () => {
     const selProd = getProductByKey(state.selectedProductKey || state.activeProductKey);
-    const curPref = getPreferenceForProduct(selProd);
-    const rawVal = curPref?.mode === 'dynamic'
-      ? 'dynamic'
-      : (curPref?.mode === 'default' ? 'default' : Number(el('exactTokenInput')?.value || 256000));
+    const rawVal = resolveCurrentBudgetInputSelection(selProd);
     await saveAndApplyProductBudget(rawVal, selProd, { autoUnlockBinary: true });
   });
 
@@ -3189,15 +3538,6 @@
     void checkReleaseUpdate({ silent: false, force: true });
   });
 
-  if (state.autoCheckUpdate !== false) {
-    const autoUpdateTimer = setTimeout(() => {
-      if (!state.disposed && state.autoCheckUpdate !== false) {
-        void checkReleaseUpdate({ silent: true, force: false });
-      }
-    }, 4500);
-    autoUpdateTimer?.unref?.();
-  }
-
   el('btnRunHotReload')?.addEventListener('click', async () => {
     const hotBtn = el('btnRunHotReload');
     if (hotBtn) hotBtn.disabled = true;
@@ -3377,6 +3717,7 @@
     setPanelLanguage: (lang) => {
       state.panelLang = normalizePulseLang(lang);
       applyStaticTranslations();
+      renderAll();
       return state.panelLang;
     },
     setModelBudgetForTest: async (modelOrProductKey, target, scope = 'per_model') => {
@@ -3422,6 +3763,7 @@
       }
       controllers.clear();
       clearTimeout(toastTimer);
+      clearTimeout(autoUpdateTimer);
       uninstallRequestInterceptor();
       document.removeEventListener?.('click', onDocClick, true);
       document.removeEventListener?.('keydown', onDocKeydown);

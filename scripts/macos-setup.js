@@ -17,10 +17,40 @@ const { install, extractAsarFile, tryHotInjectDetailed, shutdownLiveHostGraceful
 const { restore } = require('../restore');
 const { syncLiveRuntimeBundle, getLiveRuntimeDir } = require('../meter-collector');
 const { TAGS } = require('../modular-installer');
+const { PROJECT_VERSION } = require('../modules-config');
 const { LOOPBACK_IPV4 } = require('../local-api');
 
 const GUARD_LABEL = 'com.antigravity.pulse.guard';
 const DAEMON_LABEL = 'com.antigravity.pulse.daemon';
+
+/**
+ * 解析稳定的 Node.js 可执行入口路径（优先选用 /opt/homebrew/bin/node 等软链而非易随小版本升级失效的 Cellar 版本目录）
+ */
+function resolveStableNodeBinary(execPath = process.execPath) {
+  if (process.platform === 'win32') return execPath;
+  const stableCandidates = [
+    '/opt/homebrew/bin/node',
+    '/usr/local/bin/node',
+    path.join(os.homedir(), '.volta', 'bin', 'node'),
+    path.join(os.homedir(), '.asdf', 'shims', 'node'),
+    '/usr/bin/node'
+  ];
+  let currentReal = execPath;
+  try { currentReal = fs.realpathSync(execPath); } catch {}
+  for (const cand of stableCandidates) {
+    try {
+      if (!fs.existsSync(cand)) continue;
+      const candReal = fs.realpathSync(cand);
+      if (candReal === currentReal) return cand;
+    } catch {}
+  }
+  for (const cand of ['/opt/homebrew/bin/node', '/usr/local/bin/node']) {
+    try {
+      if (fs.existsSync(cand)) return cand;
+    } catch {}
+  }
+  return execPath;
+}
 
 function resolveAppBundleFromAsar(asarPath) {
   if (asarPath && process.platform === 'darwin') {
@@ -33,11 +63,28 @@ function resolveAppBundleFromAsar(asarPath) {
 function isAntigravityProcessAlive() {
   if (process.platform === 'darwin') {
     const pg = spawnSync('pgrep', ['-x', 'Antigravity'], { encoding: 'utf8' });
-    return pg.status === 0 && Boolean(String(pg.stdout || '').trim());
+    if (pg.status !== 0) return false;
+    const pids = String(pg.stdout || '').split(/\s+/).map(s => Number(s.trim())).filter(n => n > 0 && n !== process.pid && n !== process.ppid);
+    return pids.length > 0;
   }
   if (process.platform === 'win32') {
-    const tl = spawnSync('tasklist', ['/FI', 'IMAGENAME eq Antigravity.exe', '/NH'], { encoding: 'utf8', windowsHide: true });
-    return String(tl.stdout || '').toLowerCase().includes('antigravity.exe');
+    // 排除当前安装器进程及父进程，防止 ELECTRON_RUN_AS_NODE 借壳 Antigravity.exe 运行时把自身误判为活跃客户端
+    const tl = spawnSync('tasklist', ['/FI', 'IMAGENAME eq Antigravity.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true });
+    const lines = String(tl.stdout || '').split(/\r?\n/).filter(l => l.toLowerCase().includes('antigravity.exe'));
+    for (const line of lines) {
+      const cols = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
+      const pid = Number(cols[1]);
+      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && pid !== process.ppid) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (process.platform === 'linux') {
+    const pg = spawnSync('pgrep', ['-x', 'antigravity'], { encoding: 'utf8' });
+    if (pg.status !== 0) return false;
+    const pids = String(pg.stdout || '').split(/\s+/).map(s => Number(s.trim())).filter(n => n > 0 && n !== process.pid && n !== process.ppid);
+    return pids.length > 0;
   }
   return false;
 }
@@ -50,7 +97,11 @@ async function quitAntigravityGracefully(maxWaitMs = 6500) {
     } catch {}
   } else if (process.platform === 'win32') {
     try {
-      spawnSync('taskkill', ['/IM', 'Antigravity.exe'], { timeout: 4000, stdio: 'ignore', windowsHide: true });
+      spawnSync('taskkill', ['/FI', `PID ne ${process.pid}`, '/FI', `PID ne ${process.ppid || 0}`, '/IM', 'Antigravity.exe'], { timeout: 4000, stdio: 'ignore', windowsHide: true });
+    } catch {}
+  } else if (process.platform === 'linux') {
+    try {
+      spawnSync('pkill', ['-TERM', '-x', 'antigravity'], { timeout: 4000, stdio: 'ignore' });
     } catch {}
   }
   const deadline = Date.now() + maxWaitMs;
@@ -76,7 +127,24 @@ function launchAntigravityApp(appBundleOrAsar, extraArgs = []) {
   if (process.platform === 'win32') {
     const exePath = path.resolve(appBundleOrAsar, '..', '..', 'Antigravity.exe');
     if (fs.existsSync(exePath)) {
-      const child = spawn(exePath, extraArgs, { detached: true, stdio: 'ignore', windowsHide: true });
+      const cleanEnv = { ...process.env };
+      delete cleanEnv.ELECTRON_RUN_AS_NODE;
+      const child = spawn(exePath, extraArgs, { detached: true, stdio: 'ignore', windowsHide: true, env: cleanEnv });
+      child.unref();
+      return true;
+    }
+  }
+  if (process.platform === 'linux') {
+    const binCandidates = [
+      path.resolve(appBundleOrAsar, '..', '..', 'antigravity'),
+      '/usr/bin/antigravity',
+      '/opt/antigravity/antigravity'
+    ];
+    const binPath = binCandidates.find(p => fs.existsSync(p));
+    if (binPath) {
+      const cleanEnv = { ...process.env };
+      delete cleanEnv.ELECTRON_RUN_AS_NODE;
+      const child = spawn(binPath, extraArgs, { detached: true, stdio: 'ignore', env: cleanEnv });
       child.unref();
       return true;
     }
@@ -122,7 +190,7 @@ function buildGuardPlistXml({ nodePath, cliPath, asarPath, logPath }) {
   <key>ThrottleInterval</key>
   <integer>10</integer>
   <key>RunAtLoad</key>
-  <true/>
+  <false/>
   <key>StandardOutPath</key>
   <string>${xmlEscape(logPath)}</string>
   <key>StandardErrorPath</key>
@@ -235,7 +303,7 @@ function createZeroAsarLauncherApp(sourceAppBundle, debugPort = 9222) {
   } catch {}
 
   const launcherScript = `#!/bin/bash
-open -a "${sourceAppBundle.replace(/"/g, '\\"')}" --args --remote-debugging-address=${LOOPBACK_IPV4} --remote-debugging-port=${debugPort} --remote-allow-origins=*
+open -a "${sourceAppBundle.replace(/"/g, '\\"')}" --args --remote-debugging-address=${LOOPBACK_IPV4} --remote-debugging-port=${debugPort}
 `;
   const binPath = path.join(macosDir, 'launcher');
   fs.writeFileSync(binPath, launcherScript, { encoding: 'utf8', mode: 0o755 });
@@ -256,7 +324,7 @@ open -a "${sourceAppBundle.replace(/"/g, '\\"')}" --args --remote-debugging-addr
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.9.0</string>
+  <string>${xmlEscape(PROJECT_VERSION)}</string>
   <key>LSUIElement</key>
   <true/>
 </dict>
@@ -346,11 +414,12 @@ async function runFormalSetup(options = {}) {
 
     if (nativeBootHealthy) {
       // 注册 0 常驻内存的官方更新自动重装守护 (WatchPaths)
+      try { fs.rmSync(path.join(stateDir, '.zero-asar-mode.json'), { force: true }); } catch {}
       if (process.platform === 'darwin') {
         unloadAndRemoveLaunchAgent(daemonPlistPath);
         fs.mkdirSync(launchAgentsDir, { recursive: true });
         const plistXml = buildGuardPlistXml({
-          nodePath: process.execPath,
+          nodePath: resolveStableNodeBinary(),
           cliPath: runtimeCliPath,
           asarPath,
           logPath: guardLogPath
@@ -377,11 +446,17 @@ async function runFormalSetup(options = {}) {
   }
 
   // 零改包正式守护模式 (--zero-asar 或签名严格兜底)
+  try {
+    fs.writeFileSync(path.join(stateDir, '.zero-asar-mode.json'), JSON.stringify({
+      enabled: true,
+      updatedAt: new Date().toISOString()
+    }, null, 2), 'utf8');
+  } catch {}
   if (process.platform === 'darwin') {
     unloadAndRemoveLaunchAgent(guardPlistPath);
     fs.mkdirSync(launchAgentsDir, { recursive: true });
     const daemonXml = buildDaemonPlistXml({
-      nodePath: process.execPath,
+      nodePath: resolveStableNodeBinary(),
       cliPath: runtimeCliPath,
       logPath: guardLogPath
     });
@@ -392,8 +467,7 @@ async function runFormalSetup(options = {}) {
       await quitAntigravityGracefully(5000);
       launchAntigravityApp(appBundle, [
         `--remote-debugging-address=${LOOPBACK_IPV4}`,
-        '--remote-debugging-port=9222',
-        '--remote-allow-origins=*'
+        '--remote-debugging-port=9222'
       ]);
     }
     console.log(`✅ 已启用「零改包后台自动挂载守护」(${DAEMON_LABEL})`);
@@ -466,21 +540,30 @@ async function runZeroAsarDaemon( hooks = {} ) {
   console.log(`[Pulse Daemon ${new Date().toISOString()}] 零改包自动挂载守护已启动`);
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    let sleepMs = 4500;
     try {
       const snap = await queryLiveWindow();
-      if (snap.running && snap.pageFound && !snap.active) {
-        const bridgePrep = await ensureLiveBridgeIfNeeded(snap);
-        await tryHotInjectDetailed({
-          source: 'pulse-daemon',
-          cdpPort: snap.cdpPort || null,
-          liveInfo: bridgePrep.liveInfo || null,
-          liveVerified: Boolean(bridgePrep.ready && bridgePrep.liveInfo),
-          preferLiveHost: Boolean(bridgePrep.ready && bridgePrep.backendSource === 'live-host'),
-          clearStaleLiveBridge: Boolean(bridgePrep.clearStaleLiveBridge)
-        });
+      if (snap.running && snap.pageFound) {
+        if (!snap.active) {
+          const bridgePrep = await ensureLiveBridgeIfNeeded(snap);
+          await tryHotInjectDetailed({
+            source: 'pulse-daemon',
+            cdpPort: snap.cdpPort || null,
+            liveInfo: bridgePrep.liveInfo || null,
+            liveVerified: Boolean(bridgePrep.ready && bridgePrep.liveInfo),
+            preferLiveHost: Boolean(bridgePrep.ready && bridgePrep.backendSource === 'live-host'),
+            clearStaleLiveBridge: Boolean(bridgePrep.clearStaleLiveBridge)
+          });
+          sleepMs = 3500;
+        } else {
+          // 窗口已成功挂载时拉长探测间隔，避免短周期重复建立 CDP WebSocket 会话
+          sleepMs = 9000;
+        }
+      } else {
+        sleepMs = 6000;
       }
     } catch {}
-    await new Promise(r => setTimeout(r, 2800));
+    await new Promise(r => setTimeout(r, sleepMs));
   }
 }
 
@@ -489,6 +572,7 @@ async function runZeroAsarDaemon( hooks = {} ) {
  */
 async function runFormalTeardown(options = {}) {
   const customPath = options.customPath || null;
+  const purgeAll = Boolean(options.purge || process.argv.includes('--purge'));
   const launchAgentsDir = getLaunchAgentsDir();
   const guardRemoved = unloadAndRemoveLaunchAgent(path.join(launchAgentsDir, `${GUARD_LABEL}.plist`));
   const daemonRemoved = unloadAndRemoveLaunchAgent(path.join(launchAgentsDir, `${DAEMON_LABEL}.plist`));
@@ -540,6 +624,17 @@ async function runFormalTeardown(options = {}) {
   try {
     const { restoreAllEnhance } = require('../meter-enhance');
     restoreAllEnhance({});
+  } catch {}
+
+  // 清理运行态归档、临时快照与守护日志，防止卸载后在应用支持目录残留数十 MB 备份文件
+  try {
+    if (purgeAll) {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    } else {
+      for (const relClean of ['live-runtime', 'locks', '.zero-asar-mode.json', '.live-session.json', 'guard.log', path.join('backups', 'snapshots')]) {
+        try { fs.rmSync(path.join(stateDir, relClean), { recursive: true, force: true }); } catch {}
+      }
+    }
   } catch {}
 
   return {

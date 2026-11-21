@@ -59,7 +59,7 @@ function buildRenderer(options = {}) {
   const effTargetFile = options.targetFile ? path.resolve(options.targetFile) : path.join(effRootDir, 'meter-renderer.js');
 
   const pkg = JSON.parse(fs.readFileSync(path.join(effRootDir, 'package.json'), 'utf8'));
-  const meterVersion = pkg.version || '0.9.0';
+  const meterVersion = pkg.version || '0.9.1';
 
   const styles = readVerifiedRendererSource(effSrcDir, 'styles.css').trim();
   let template = readVerifiedRendererSource(effSrcDir, 'template.html').trim();
@@ -70,10 +70,26 @@ function buildRenderer(options = {}) {
   const charts = readVerifiedRendererSource(effSrcDir, 'charts.js').trim();
   let mainSource = readVerifiedRendererSource(effSrcDir, 'main.js');
 
+  const verRegex = /const METER_VERSION = '[^']*';/;
+  if (!verRegex.test(mainSource)) {
+    throw new Error('[构建中止] src/renderer/main.js 缺少 METER_VERSION 常量声明');
+  }
   mainSource = mainSource.replace(
-    /const METER_VERSION = '[^']*';/,
+    verRegex,
     `const METER_VERSION = '${meterVersion}';`
   );
+
+  const requiredMarkers = [
+    '  /* @INSERT_STYLES_AND_TEMPLATE */',
+    '  /* @INSERT_I18N_MODULE */',
+    '  /* @INSERT_BUDGET_ENGINE_MODULE */',
+    '  /* @INSERT_CHARTS_MODULE */'
+  ];
+  for (const marker of requiredMarkers) {
+    if (!mainSource.includes(marker)) {
+      throw new Error(`[构建中止] src/renderer/main.js 缺少模块注入锚点: ${marker.trim()}`);
+    }
+  }
 
   const domMountSnippet =
     `  shadow.innerHTML = \`<style>\\n${escapeTemplateLiteral(styles)}\\n</style>\\n${escapeTemplateLiteral(template)}\`;`;

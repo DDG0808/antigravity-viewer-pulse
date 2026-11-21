@@ -4,7 +4,7 @@ set -euo pipefail
 # 兼容 Finder 双击与非交互式 Shell 下的 Homebrew / NVM / Volta Node.js 路径
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.volta/bin:$PATH"
 if [ -d "$HOME/.nvm/versions/node" ]; then
-  LATEST_NVM_NODE="$(ls -1 "$HOME/.nvm/versions/node" 2>/dev/null | tail -n 1 || true)"
+  LATEST_NVM_NODE="$(ls -1 "$HOME/.nvm/versions/node" 2>/dev/null | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1 || true)"
   if [ -n "$LATEST_NVM_NODE" ]; then
     export PATH="$HOME/.nvm/versions/node/$LATEST_NVM_NODE/bin:$PATH"
   fi

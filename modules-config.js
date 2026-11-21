@@ -17,8 +17,8 @@ const { getStateDir } = require('./asar-engine');
 const { safeWriteJsonSync } = require('./meter-storage');
 const { parseAndValidateProxyUrl } = require('./meter-proxy');
 
-const SCHEMA_VERSION = "0.9.0";
-const FALLBACK_PROJECT_VERSION = "0.9.0";
+const SCHEMA_VERSION = "0.9.1";
+const FALLBACK_PROJECT_VERSION = "0.9.1";
 
 function resolveProjectVersion() {
   for (const pkgPath of [
@@ -297,8 +297,11 @@ function saveModulesConfig(cfg, options = {}) {
 /**
  * 通过 SOCKS5 协议验证代理握手与到目标主机的隧道建立
  */
-function testSocks5Proxy(host, port, targetHost = null, targetPort = 80, timeoutMs = 2500) {
+function testSocks5Proxy(host, port, targetHost = null, targetPort = 80, timeoutMs = 2500, auth = null) {
   const net = require('net');
+  const username = auth && auth.username ? decodeURIComponent(auth.username) : '';
+  const password = auth && auth.password ? decodeURIComponent(auth.password) : '';
+  const hasAuth = Boolean(username || password);
   return new Promise((resolve) => {
     let settled = false;
     const sock = net.createConnection({ host, port });
@@ -318,55 +321,96 @@ function testSocks5Proxy(host, port, targetHost = null, targetPort = 80, timeout
       done(false, e?.code || e?.message || 'socket_error');
     });
 
+    const sendConnectRequest = () => {
+      if (!targetHost) {
+        clearTimeout(timer);
+        return done(true, null);
+      }
+      stage = 'connect';
+      const hostBuf = Buffer.from(targetHost, 'utf8');
+      const req = Buffer.alloc(7 + hostBuf.length);
+      req[0] = 0x05;
+      req[1] = 0x01;
+      req[2] = 0x00;
+      req[3] = 0x03;
+      req[4] = hostBuf.length;
+      hostBuf.copy(req, 5);
+      req.writeUInt16BE(targetPort, 5 + hostBuf.length);
+      sock.write(req);
+    };
+
     let stage = 'greeting';
     let chunks = [];
     sock.on('connect', () => {
-      // SOCKS5 greeting: VER=5, NMETHODS=1, METHOD=0 (no auth)
-      sock.write(Buffer.from([0x05, 0x01, 0x00]));
+      // 同时声明无认证(0x00)与账号密码认证(0x02)，兼容受控代理服务端
+      sock.write(hasAuth ? Buffer.from([0x05, 0x02, 0x00, 0x02]) : Buffer.from([0x05, 0x01, 0x00]));
     });
     sock.on('data', (chunk) => {
       chunks.push(chunk);
-      const buf = Buffer.concat(chunks);
+      let buf = Buffer.concat(chunks);
       if (stage === 'greeting') {
         if (buf.length < 2) return;
         if (buf[0] !== 0x05 || buf[1] === 0xff) {
           clearTimeout(timer);
           return done(false, 'socks5_greeting_rejected');
         }
-        if (!targetHost) {
-          clearTimeout(timer);
-          return done(true, null);
+        const chosenMethod = buf[1];
+        chunks = buf.length > 2 ? [buf.subarray(2)] : [];
+        if (chosenMethod === 0x02) {
+          if (!hasAuth) {
+            clearTimeout(timer);
+            return done(false, 'socks5_auth_required');
+          }
+          const uBuf = Buffer.from(username, 'utf8');
+          const pBuf = Buffer.from(password, 'utf8');
+          if (uBuf.length > 255 || pBuf.length > 255) {
+            clearTimeout(timer);
+            return done(false, 'socks5_auth_too_long');
+          }
+          stage = 'auth';
+          const authPkt = Buffer.alloc(3 + uBuf.length + pBuf.length);
+          authPkt[0] = 0x01;
+          authPkt[1] = uBuf.length;
+          uBuf.copy(authPkt, 2);
+          authPkt[2 + uBuf.length] = pBuf.length;
+          pBuf.copy(authPkt, 3 + uBuf.length);
+          sock.write(authPkt);
+          return;
         }
-        chunks = [buf.subarray(2)];
-        stage = 'connect';
-        const hostBuf = Buffer.from(targetHost, 'utf8');
-        const req = Buffer.alloc(7 + hostBuf.length);
-        req[0] = 0x05; // VER
-        req[1] = 0x01; // CONNECT
-        req[2] = 0x00; // RSV
-        req[3] = 0x03; // DOMAINNAME
-        req[4] = hostBuf.length;
-        hostBuf.copy(req, 5);
-        req.writeUInt16BE(targetPort, 5 + hostBuf.length);
-        sock.write(req);
+        sendConnectRequest();
+        return;
+      }
+      if (stage === 'auth') {
+        if (buf.length < 2) return;
+        if (buf[1] !== 0x00) {
+          clearTimeout(timer);
+          return done(false, 'socks5_auth_failed');
+        }
+        chunks = buf.length > 2 ? [buf.subarray(2)] : [];
+        sendConnectRequest();
         return;
       }
       if (stage === 'connect') {
-        if (buf.length < 4) return;
-        if (buf[0] === 0x05 && buf[1] === 0x00) {
-          stage = 'http';
-          chunks = [];
-          sock.write(
-            `GET /generate_204 HTTP/1.1\r\nHost: ${targetHost}\r\nConnection: close\r\n\r\n`
-          );
-          return;
+        if (buf.length < 5) return;
+        if (buf[0] !== 0x05 || buf[1] !== 0x00) {
+          clearTimeout(timer);
+          return done(false, `socks5_connect_err_${buf[1]}`);
         }
-        clearTimeout(timer);
-        return done(false, `socks5_connect_err_${buf[1]}`);
+        // 严格按 RFC 1928 ATYP 消费完整 CONNECT 回复包，防止绑定地址残留字节粘连到后续 HTTP 响应头
+        const atyp = buf[3];
+        const replyLen = atyp === 0x01 ? 10 : (atyp === 0x04 ? 22 : (atyp === 0x03 ? 7 + buf[4] : 10));
+        if (buf.length < replyLen) return;
+        stage = 'http';
+        chunks = buf.length > replyLen ? [buf.subarray(replyLen)] : [];
+        sock.write(
+          `GET /generate_204 HTTP/1.1\r\nHost: ${targetHost}\r\nConnection: close\r\n\r\n`
+        );
+        buf = chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0);
+        if (!buf.length) return;
       }
       if (stage === 'http') {
         const text = buf.toString('latin1');
-        const m = text.match(/^HTTP\/\d\.\d\s+(\d{3})/);
+        const m = text.match(/HTTP\/\d\.\d\s+(\d{3})/);
         if (m) {
           const code = Number(m[1]);
           clearTimeout(timer);
@@ -404,12 +448,18 @@ async function testProxyHealth(proxyUrlStr) {
   const u = new URL(parsedCheck.value);
   const isSocks = parsedCheck.isSocks;
   const port = parsedCheck.port;
+  const socksAuth = (parsedCheck.username || parsedCheck.password)
+    ? { username: parsedCheck.username, password: parsedCheck.password }
+    : null;
+  const proxyAuthHeader = (parsedCheck.username || parsedCheck.password)
+    ? 'Basic ' + Buffer.from(`${decodeURIComponent(parsedCheck.username || '')}:${decodeURIComponent(parsedCheck.password || '')}`, 'utf8').toString('base64')
+    : null;
 
   // 阶段 2: 本地代理端口可达性检测
   try {
     let reachable = false;
     if (isSocks) {
-      const sRes = await testSocks5Proxy(u.hostname, port, null, 80, 2500);
+      const sRes = await testSocks5Proxy(u.hostname, port, null, 80, 2500, socksAuth);
       reachable = sRes.ok;
     } else {
       reachable = await new Promise(resolve => {
@@ -420,7 +470,8 @@ async function testProxyHealth(proxyUrlStr) {
           port: port,
           method: 'CONNECT',
           path: 'www.google.com:443',
-          timeout: 2500
+          timeout: 2500,
+          ...(proxyAuthHeader ? { headers: { 'Proxy-Authorization': proxyAuthHeader } } : {})
         });
         req.on('connect', (_res, socket) => {
           try { socket?.destroy(); } catch {}
@@ -452,7 +503,7 @@ async function testProxyHealth(proxyUrlStr) {
   try {
     let internetOk = false;
     if (isSocks) {
-      const netRes = await testSocks5Proxy(u.hostname, port, 'www.google.com', 80, 3500);
+      const netRes = await testSocks5Proxy(u.hostname, port, 'www.google.com', 80, 3500, socksAuth);
       internetOk = netRes.ok;
     } else {
       internetOk = await new Promise(resolve => {
@@ -464,7 +515,10 @@ async function testProxyHealth(proxyUrlStr) {
           method: 'GET',
           path: 'http://www.google.com/generate_204',
           timeout: 3500,
-          headers: { Host: 'www.google.com' }
+          headers: {
+            Host: 'www.google.com',
+            ...(proxyAuthHeader ? { 'Proxy-Authorization': proxyAuthHeader } : {})
+          }
         }, res => {
           res.resume();
           finish(res.statusCode >= 200 && res.statusCode < 400);
@@ -485,16 +539,39 @@ async function testProxyHealth(proxyUrlStr) {
   return report;
 }
 
+const INSTALL_LOCK_SLEEP_BUF = typeof SharedArrayBuffer === 'function'
+  ? new Int32Array(new SharedArrayBuffer(4))
+  : null;
+
+function waitLockRetryMs(ms) {
+  if (INSTALL_LOCK_SLEEP_BUF) {
+    try {
+      Atomics.wait(INSTALL_LOCK_SLEEP_BUF, 0, 0, ms);
+      return;
+    } catch {}
+  }
+  const endWait = Date.now() + ms;
+  while (Date.now() < endWait) {}
+}
+
 /**
  * 针对目标文件的跨进程互斥文件锁
+ * 锁文件统一存放在用户状态目录 locks/ 下，避免向 /Applications/.../Contents/Resources 目录写入临时文件
+ * 导致非特权账号无权限或触发 macOS launchd WatchPaths 自激唤醒撞锁。
  */
-function acquireFileLock(targetPath, timeoutMs = 6000) {
-  const lockFile = targetPath + '.lock';
+function acquireFileLock(targetPath, timeoutMs = 12000) {
+  const crypto = require('crypto');
+  const resolvedTarget = path.resolve(String(targetPath || ''));
+  const targetHash = crypto.createHash('sha256').update(resolvedTarget).digest('hex').slice(0, 12);
+  const safeBase = path.basename(resolvedTarget).replace(/[^a-zA-Z0-9._-]/g, '_') || 'target';
+  const locksDir = path.join(getStateDir(), 'locks');
+  try { fs.mkdirSync(locksDir, { recursive: true }); } catch {}
+  const lockFile = path.join(locksDir, `${safeBase}-${targetHash}.lock`);
   const start = Date.now();
   while (true) {
     try {
       const fd = fs.openSync(lockFile, 'wx');
-      fs.writeSync(fd, String(process.pid));
+      fs.writeSync(fd, `${process.pid}:${Date.now()}`);
       fs.closeSync(fd);
       return {
         lockFile,
@@ -506,20 +583,26 @@ function acquireFileLock(targetPath, timeoutMs = 6000) {
       if (Date.now() - start >= timeoutMs) {
         throw new Error(`获取目标文件互斥锁超时 (${lockFile})：当前有其他安装或卸载任务正在操作该目标。`);
       }
-      // 避免死锁：检查持有者进程是否存活
       try {
-        const pid = parseInt(fs.readFileSync(lockFile, 'utf8'), 10);
+        const raw = fs.readFileSync(lockFile, 'utf8');
+        const parts = String(raw).split(':');
+        const pid = parseInt(parts[0], 10);
+        const createdAt = parseInt(parts[1], 10);
         if (pid && !isNaN(pid)) {
           let running = true;
-          try { process.kill(pid, 0); } catch { running = false; }
-          if (!running) {
-            fs.unlinkSync(lockFile);
+          try {
+            process.kill(pid, 0);
+          } catch (killErr) {
+            running = Boolean(killErr && killErr.code === 'EPERM');
+          }
+          const isStale = Number.isFinite(createdAt) && (Date.now() - createdAt > 180000);
+          if (!running || isStale) {
+            try { fs.unlinkSync(lockFile); } catch {}
             continue;
           }
         }
       } catch {}
-      const endWait = Date.now() + 50;
-      while (Date.now() < endWait) {} // 短暂自旋避让
+      waitLockRetryMs(40);
     }
   }
 }

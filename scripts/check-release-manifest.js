@@ -83,15 +83,25 @@ function validateManifest(options = {}) {
   const plugin = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugin.json'), 'utf8'));
   const coreSrc = fs.readFileSync(path.join(ROOT, 'meter-core.js'), 'utf8');
   const collectorSrc = fs.readFileSync(path.join(ROOT, 'meter-collector.js'), 'utf8');
+  const modulesCfgSrc = fs.readFileSync(path.join(ROOT, 'modules-config.js'), 'utf8');
   const rendererMainSrc = fs.readFileSync(path.join(ROOT, 'src/renderer/main.js'), 'utf8');
   const rendererBundleSrc = fs.readFileSync(path.join(ROOT, 'meter-renderer.js'), 'utf8');
 
   const version = pkg.version;
-  if (!/^v?(0|1)\.\d+\.\d+$/.test(version)) {
+  if (!/^v?\d+\.\d+\.\d+/.test(version)) {
     throw new Error(`package.json version 非法: ${version}`);
   }
   if (plugin.version !== version) {
     throw new Error(`版本不一致: package.json (${version}) !== plugin.json (${plugin.version})`);
+  }
+
+  const schemaVerMatch = modulesCfgSrc.match(/const\s+SCHEMA_VERSION\s*=\s*['"]([^'"]+)['"]/);
+  if (!schemaVerMatch || schemaVerMatch[1] !== version) {
+    throw new Error(`modules-config.js SCHEMA_VERSION (${schemaVerMatch?.[1]}) !== package.json (${version})`);
+  }
+  const fallbackVerMatch = modulesCfgSrc.match(/const\s+FALLBACK_PROJECT_VERSION\s*=\s*['"]([^'"]+)['"]/);
+  if (!fallbackVerMatch || fallbackVerMatch[1] !== version) {
+    throw new Error(`modules-config.js FALLBACK_PROJECT_VERSION (${fallbackVerMatch?.[1]}) !== package.json (${version})`);
   }
 
   const rendererVerMatch = rendererMainSrc.match(/const\s+METER_VERSION\s*=\s*['"]([^'"]+)['"]/);

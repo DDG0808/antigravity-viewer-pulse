@@ -541,7 +541,27 @@ def main() -> int:
             f.write(f"{sha_before}  language_server.orig.exe\n")
         print(f"[i] 备份 -> {bk}")
 
-    open(p, "wb").write(data)
+    # 采用同目录临时文件原子替换并重签（macOS Mach-O 直接覆写会触发签名缓存 SIGKILL 或运行态 ETXTBSY）
+    tmp_path = f"{p}.tmp_{os.getpid()}"
+    try:
+        with open(tmp_path, "wb") as fh:
+            fh.write(data)
+        os.chmod(tmp_path, 0o755)
+        if sys.platform == "darwin" and bytes(data[:4]) == b"\xcf\xfa\xed\xfe":
+            import subprocess
+            subprocess.run(
+                ["codesign", "--force", "--preserve-metadata=entitlements", "--sign", "-", tmp_path],
+                check=True,
+                capture_output=True,
+            )
+        os.replace(tmp_path, p)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
     print(f"[*] 写入完成  sha256 {sha_before[:12]} -> {sha_after[:12]}")
 
     if state_writable(p):

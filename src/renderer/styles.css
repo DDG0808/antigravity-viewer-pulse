@@ -79,7 +79,7 @@
 
   --fg-1: #0f172a;
   --fg-2: #475569;
-  --fg-3: #94a3b8;
+  --fg-3: #64748b;
   --toast-bg: #0f172a;
   --toast-fg: #f8fafc;
   --track: rgba(15, 23, 42, 0.09);
@@ -1305,7 +1305,7 @@ input::-webkit-inner-spin-button {
   gap: 8px;
   padding: 6px 8px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--pill-bg);
   font-size: 11px;
 }
 

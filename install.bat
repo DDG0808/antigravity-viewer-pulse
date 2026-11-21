@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-setlocal EnableDelayedExpansion
+setlocal DisableDelayedExpansion
 
 cd /d "%~dp0"
 
@@ -18,23 +18,20 @@ if %ERRORLEVEL% EQU 0 (
 )
 
 set "AG_EXE="
-if exist "%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe" (
-    set "AG_EXE=%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe"
-) else if exist "%ProgramFiles%\Antigravity\Antigravity.exe" (
-    set "AG_EXE=%ProgramFiles%\Antigravity\Antigravity.exe"
-) else if exist "%ProgramFiles(x86)%\Antigravity\Antigravity.exe" (
-    set "AG_EXE=%ProgramFiles(x86)%\Antigravity\Antigravity.exe"
-)
+if exist "%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe" set "AG_EXE=%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe"
+if not defined AG_EXE if exist "%ProgramFiles%\Antigravity\Antigravity.exe" set "AG_EXE=%ProgramFiles%\Antigravity\Antigravity.exe"
+if not defined AG_EXE if exist "%ProgramFiles(x86)%\Antigravity\Antigravity.exe" set "AG_EXE=%ProgramFiles(x86)%\Antigravity\Antigravity.exe"
 
-if defined AG_EXE (
-    echo [1/2] 未安装独立 Node.js，自动借用 Antigravity 内置引擎完成安装...
-    set "ELECTRON_RUN_AS_NODE=1"
-    "!AG_EXE!" "%~dp0cli.js" setup %*
-    set "EXIT_CODE=%ERRORLEVEL%"
-    set "ELECTRON_RUN_AS_NODE="
-    goto :FINISH
-)
+if not defined AG_EXE goto :NO_RUNTIME
 
+echo [1/2] 未安装独立 Node.js，自动借用 Antigravity 内置引擎完成安装...
+set "ELECTRON_RUN_AS_NODE=1"
+"%AG_EXE%" "%~dp0cli.js" setup %*
+set "EXIT_CODE=%ERRORLEVEL%"
+set "ELECTRON_RUN_AS_NODE="
+goto :FINISH
+
+:NO_RUNTIME
 echo [错误] 未检测到 Node.js 或默认路径下的 Antigravity.exe。
 echo 请先安装 Antigravity 桌面端，或安装 Node.js ^(https://nodejs.org/^) 后重试。
 set "EXIT_CODE=1"

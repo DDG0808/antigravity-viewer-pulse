@@ -161,9 +161,37 @@ function buildBootBackendPayload() {
 
 function getMeterSource() {
   try {
-    const coreCode = fs.readFileSync(path.join(__dirname, 'meter-core.js'), 'utf8');
-    const rendererCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
-    let bootstrap = `window.__AGContextMeterBootBackend = ${JSON.stringify(buildBootBackendPayload())};\n`;
+    const { compareVersions } = require('./meter-core');
+    let sourceDir = __dirname;
+    let liveBootstrap = '';
+    // 若用户已在面板内完成免重启热更新，新建窗口或刷新时优先加载更新后的 live-runtime bundle 以免退回旧版 ASAR
+    try {
+      const stateDir = getStateDir();
+      const rtDir = getLiveRuntimeDir(stateDir);
+      const rtPkgPath = path.join(rtDir, 'package.json');
+      if (
+        fs.existsSync(rtPkgPath) &&
+        fs.existsSync(path.join(rtDir, 'meter-core.js')) &&
+        fs.existsSync(path.join(rtDir, 'meter-renderer.js'))
+      ) {
+        const rtVer = JSON.parse(fs.readFileSync(rtPkgPath, 'utf8'))?.version;
+        if (rtVer && typeof compareVersions === 'function' && compareVersions(rtVer, PROJECT_VERSION) > 0) {
+          sourceDir = rtDir;
+          const liveSessPath = path.join(stateDir, '.live-session.json');
+          if (fs.existsSync(liveSessPath)) {
+            const liveInfo = JSON.parse(fs.readFileSync(liveSessPath, 'utf8'));
+            if (liveInfo && liveInfo.port && liveInfo.token) {
+              liveBootstrap = `window.__AGContextMeterLive = ${JSON.stringify(liveInfo)};\n` +
+                `window.__AGContextMeterHotReloadContext = ${JSON.stringify({ expectedVersion: rtVer, source: 'live-runtime-persist', preferLiveHost: true })};\n`;
+            }
+          }
+        }
+      }
+    } catch {}
+
+    const coreCode = fs.readFileSync(path.join(sourceDir, 'meter-core.js'), 'utf8');
+    const rendererCode = fs.readFileSync(path.join(sourceDir, 'meter-renderer.js'), 'utf8');
+    let bootstrap = `${liveBootstrap}window.__AGContextMeterBootBackend = ${JSON.stringify(buildBootBackendPayload())};\n`;
     try {
       const settingsSnap = getPluginSettings();
       if (settingsSnap && settingsSnap.ok) {
@@ -589,8 +617,17 @@ function registerMeterIpcHandlers(ipcMain) {
           hostBounds = targetWin.getBounds();
         } catch {}
       }
+      // 仅透传经过白名单约束的会话与模型参数，防止渲染层异常时通过 cliPath/args/env 拉起任意二进制
+      const safeCliOpts = {};
+      if (options && typeof options === 'object') {
+        if (typeof options.model === 'string') safeCliOpts.model = options.model;
+        if (typeof options.cascadeId === 'string') safeCliOpts.cascadeId = options.cascadeId;
+        if (typeof options.conversationId === 'string') safeCliOpts.conversationId = options.conversationId;
+        if (typeof options.workspacePath === 'string') safeCliOpts.workspacePath = options.workspacePath;
+        if (options.dryRun === true) safeCliOpts.dryRun = true;
+      }
       const res = await launchCliSession({
-        ...options,
+        ...safeCliOpts,
         ownerHwnd: ownerHwndStr,
         hostBounds
       }, ownerHwndStr);
@@ -617,6 +654,8 @@ function registerMeterIpcHandlers(ipcMain) {
   });
 
   ipcMain.handle('context-meter:sync-overlay', async (event, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) return { ok: false, error: '仅允许本机主聊天窗口' };
     try {
       const targetWin = resolveTargetWindow(event.sender);
       if (!targetWin || targetWin.isDestroyed?.()) return { ok: false };
@@ -1093,7 +1132,8 @@ exports.bootstrapAutoAttach = bootstrapAutoAttach;
 
 function isHostRunInBackgroundEnabled() {
   try {
-    if (process.platform === 'darwin') return true;
+    // macOS 原生应用本身支持无窗口 Dock 驻留，不劫持窗口关闭事件以免阻止用户释放项目窗口与渲染内存
+    if (process.platform === 'darwin') return false;
     let storagePath = null;
     if (app && typeof app.getPath === 'function') {
       try {

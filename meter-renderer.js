@@ -1,8 +1,17 @@
 (function () {
   'use strict';
 
-  const METER_VERSION = '0.9.0';
+  const METER_VERSION = '0.9.1';
   const LOOPBACK_HOST = [127, 0, 0, 1].join('.');
+
+  // 仅允许在本地回环页面、受控桌面协议或无 location 测试沙箱中挂载，阻止第三方外部页面加载 HUD
+  try {
+    const rawOrigin = String(globalThis.location?.origin || '').trim();
+    if (rawOrigin && rawOrigin !== 'null') {
+      const allowedOrigin = /^(?:https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?|vscode-file:\/\/.*|vscode-webview:\/\/.*|app:\/\/.*|file:\/\/.*|about:.*)$/i.test(rawOrigin);
+      if (!allowedOrigin) return;
+    }
+  } catch {}
 
   let inheritedState = null;
   try {
@@ -106,7 +115,7 @@
 
   --fg-1: #0f172a;
   --fg-2: #475569;
-  --fg-3: #94a3b8;
+  --fg-3: #64748b;
   --toast-bg: #0f172a;
   --toast-fg: #f8fafc;
   --track: rgba(15, 23, 42, 0.09);
@@ -1332,7 +1341,7 @@ input::-webkit-inner-spin-button {
   gap: 8px;
   padding: 6px 8px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--pill-bg);
   font-size: 11px;
 }
 
@@ -1409,7 +1418,7 @@ input::-webkit-inner-spin-button {
       <strong class="mono" id="tipCtxVal">-- / --</strong>
     </div>
     <div class="glance-row">
-      <span class="glance-lbl" id="tipPoolLbl" data-i18n="tipQuota">共享额度池</span>
+      <span class="glance-lbl" id="tipPoolLbl">共享额度池</span>
       <strong class="mono" id="tipQuotaVal" style="color:var(--emerald)">--%</strong>
     </div>
     <div class="glance-row">
@@ -1450,7 +1459,7 @@ input::-webkit-inner-spin-button {
     </div>
 
     <div class="nav-group">
-      <button class="rail-mini-btn" id="btnOpenUpdateSheet" type="button" title="版本检查与热更新 (v0.9.0)">
+      <button class="rail-mini-btn" id="btnOpenUpdateSheet" type="button" title="版本检查与热更新 (v0.9.1)">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M5 21h14"/></svg>
         <i class="badge-dot" id="updateBadgeDot" hidden></i>
       </button>
@@ -1500,7 +1509,7 @@ input::-webkit-inner-spin-button {
                 <button class="ctx-budget-pill mono" id="btnJumpBudget" type="button" title="前往「预算」空间调整模型上下文上限">
                   <span data-i18n="limitLabel">上限</span>
                   <strong id="heroLimitLbl">256K</strong>
-                  <span class="jump-hint">预算 ›</span>
+                  <span class="jump-hint" data-i18n="jumpHintBudget">预算 ›</span>
                 </button>
               </div>
               <div style="font-size:11px;color:var(--fg-2);margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" class="mono" id="sessionCostTxt">本轮 $0.000 · 会话 $0.00</div>
@@ -1514,7 +1523,7 @@ input::-webkit-inner-spin-button {
               </svg>
               <div class="arc-center">
                 <div class="mono" style="font-size:18px;font-weight:700;letter-spacing:-0.03em" id="heroPctTxt">0.0%</div>
-                <div style="font-size:9.5px;color:var(--fg-3)" id="heroSourceMode" data-i18n="actualMeasured">等待响应</div>
+                <div style="font-size:9.5px;color:var(--fg-3)" id="heroSourceMode">等待响应</div>
               </div>
             </div>
           </div>
@@ -1669,10 +1678,10 @@ input::-webkit-inner-spin-button {
             <input class="range-slider" id="budgetSlider" type="range" min="16384" max="2097152" step="1024" value="256000" />
 
             <div class="detent-marks" id="detentBtns">
-              <button type="button" data-det="default">默认 256K</button>
+              <button type="button" data-det="default" data-i18n="detDefault">默认 256K</button>
               <button type="button" data-det="128000">128K</button>
               <button type="button" data-det="512000">512K</button>
-              <button type="button" data-det="max">理论最大</button>
+              <button type="button" data-det="max" data-i18n="detMax">理论最大</button>
               <button type="button" data-det="1048576">1M</button>
               <button type="button" data-det="dynamic">2M DYN</button>
             </div>
@@ -1785,9 +1794,9 @@ input::-webkit-inner-spin-button {
             <span>输出: <strong>$0.00</strong></span>
           </div>
           <div class="seg-bar" id="valuationModeSeg">
-            <button class="seg-item on" type="button" data-vmode="actual">实际混合</button>
-            <button class="seg-item" type="button" data-vmode="gemini-3.1-pro">按 G3.1 Pro</button>
-            <button class="seg-item" type="button" data-vmode="claude-opus-4-6-thinking">按 Opus 4.6</button>
+            <button class="seg-item on" type="button" data-vmode="actual" data-i18n="vmodeActual">实际混合</button>
+            <button class="seg-item" type="button" data-vmode="gemini-3.1-pro" data-i18n="vmodeG31">按 G3.1 Pro</button>
+            <button class="seg-item" type="button" data-vmode="claude-opus-4-6-thinking" data-i18n="vmodeOpus">按 Opus 4.6</button>
           </div>
         </div>
       </div>
@@ -1867,7 +1876,7 @@ input::-webkit-inner-spin-button {
             <div class="seg-bar" id="brandWordSeg">
               <button class="seg-item on" type="button" data-bword="english">Antigravity</button>
               <button class="seg-item" type="button" data-bword="hidden" data-i18n="brandHide">隐藏</button>
-              <button class="seg-item" type="button" data-bword="translated">反重力</button>
+              <button class="seg-item" type="button" data-bword="translated" data-i18n="brandTranslated">反重力</button>
             </div>
           </div>
         </div>
@@ -1904,16 +1913,16 @@ input::-webkit-inner-spin-button {
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
         <div>
           <div style="font-size:14px;font-weight:650" data-i18n="auditSheetTitle">会话缓存总览与最近一次请求对账</div>
-          <div style="font-size:10.5px;color:var(--fg-2)">先看整个会话累计缓存复用效率，再向下核对最近一次模型请求与本地附件</div>
+          <div style="font-size:10.5px;color:var(--fg-2)" data-i18n="auditSheetSub">先看整个会话累计缓存复用效率，再向下核对最近一次模型请求与本地附件</div>
         </div>
-        <button class="action-btn" type="button" data-close-sheet="auditSheet">返回驾驶舱</button>
+        <button class="action-btn" type="button" data-close-sheet="auditSheet" data-i18n="backToCockpit">返回驾驶舱</button>
       </div>
 
       <!-- 第一层：整个会话累计缓存总览横幅 -->
       <div class="scrubber-box audit-sess-banner" id="auditSessionCacheCard">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
           <div style="display:flex;align-items:baseline;gap:8px;min-width:0;flex-wrap:wrap">
-            <span style="font-size:11.5px;font-weight:600;color:var(--fg-1)">整段会话缓存命中率</span>
+            <span style="font-size:11.5px;font-weight:600;color:var(--fg-1)" data-i18n="audSessTitle">整段会话缓存命中率</span>
             <strong class="mono" style="font-size:17px;font-weight:700;color:var(--emerald)" id="audSessCachePct">--%</strong>
             <span class="tag neutral mono" id="audSessTurnTag">0 轮请求</span>
           </div>
@@ -1930,7 +1939,7 @@ input::-webkit-inner-spin-button {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:11px;flex:1;min-height:0">
         <div class="scrubber-box" style="display:flex;flex-direction:column;justify-content:space-between;gap:6px">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
-            <span style="font-size:11.5px;font-weight:600;color:var(--accent)">最近一次模型请求 (单轮返回)</span>
+            <span style="font-size:11.5px;font-weight:600;color:var(--accent)" data-i18n="audLatestTitle">最近一次模型请求 (单轮返回)</span>
             <span class="tag neutral mono" id="audLatestTurnBadge">最新轮</span>
           </div>
           <div style="display:grid;grid-template-columns:1fr auto;gap:5.5px;font-size:11px" id="auditServerGrid">
@@ -1947,13 +1956,13 @@ input::-webkit-inner-spin-button {
 
         <div class="scrubber-box" style="display:flex;flex-direction:column;justify-content:space-between;gap:8px;min-height:0">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:11.5px;font-weight:600;color:var(--violet)">归档累计与附件明细</span>
+            <span style="font-size:11.5px;font-weight:600;color:var(--violet)" data-i18n="audAttachTitle">归档累计与附件明细</span>
             <span class="mono" style="font-size:10px;color:var(--fg-3)" id="audStepStats">0 步</span>
           </div>
           <div class="file-audit-list" id="auditFileList">
             <div style="font-size:11px;color:var(--fg-3);padding:12px 0;text-align:center">当前会话暂无外部附件或尚未完成扫描</div>
           </div>
-          <button class="action-btn primary" id="btnSheetRescan" type="button">↻ 重新扫描整段归档与附件</button>
+          <button class="action-btn primary" id="btnSheetRescan" type="button" data-i18n="btnRescanTxt">↻ 重新扫描整段归档与附件</button>
         </div>
       </div>
     </div>
@@ -1962,14 +1971,14 @@ input::-webkit-inner-spin-button {
     <div class="glass-sheet" id="speedSheet">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
         <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
-          <span style="font-size:14px;font-weight:650">本机实测性能基准与单模型趋势</span>
+          <span style="font-size:14px;font-weight:650" data-i18n="speedSheetTitle">本机实测性能基准与单模型趋势</span>
           <div class="seg-bar" id="duelMetricSeg">
-            <button class="seg-item on" type="button" data-dm="tps">输出 tok/s</button>
-            <button class="seg-item" type="button" data-dm="ttft">首字 TTFT</button>
-            <button class="seg-item" type="button" data-dm="dur">单轮耗时</button>
+            <button class="seg-item on" type="button" data-dm="tps" data-i18n="dmTps">输出 tok/s</button>
+            <button class="seg-item" type="button" data-dm="ttft" data-i18n="dmTtft">首字 TTFT</button>
+            <button class="seg-item" type="button" data-dm="dur" data-i18n="dmDur">单轮耗时</button>
           </div>
         </div>
-        <button class="action-btn" type="button" data-close-sheet="speedSheet">返回</button>
+        <button class="action-btn" type="button" data-close-sheet="speedSheet" data-i18n="btnBack">返回</button>
       </div>
 
       <div class="scrubber-box" id="duelBarsBox" style="display:flex;flex-direction:column;gap:9px;max-height:195px;overflow-y:auto"></div>
@@ -1987,28 +1996,28 @@ input::-webkit-inner-spin-button {
     <div class="glass-sheet" id="subSheet">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
         <div>
-          <div style="font-size:14px;font-weight:650">AI 订阅地区、汇率折算与获取方式</div>
-          <div style="font-size:10.5px;color:var(--fg-2)">内置 42 个国家/地区汇率预设与家庭共享 / 教育 / 硬件赠送模式</div>
+          <div style="font-size:14px;font-weight:650" data-i18n="subSheetTitle">AI 订阅地区、汇率折算与获取方式</div>
+          <div style="font-size:10.5px;color:var(--fg-2)" data-i18n="subSheetSub">内置 42 个国家/地区汇率预设与家庭共享 / 教育 / 硬件赠送模式</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
           <input class="clean-field" id="countrySearchInput" type="text" placeholder="搜索国家/货币 (如 TR, 土耳其, USD)" style="width:186px" />
-          <button class="action-btn primary" id="btnSaveSubConfig" type="button" data-close-sheet="subSheet">保存并返回</button>
+          <button class="action-btn primary" id="btnSaveSubConfig" type="button" data-close-sheet="subSheet" data-i18n="btnSaveBack">保存并返回</button>
         </div>
       </div>
 
       <div class="seg-bar" style="flex-wrap:wrap" id="acqModeSeg">
-        <button class="seg-item on" type="button" data-acq="paid_pro">Google AI Pro 自付</button>
-        <button class="seg-item" type="button" data-acq="paid_ultra">AI Ultra 自付</button>
-        <button class="seg-item" type="button" data-acq="family_share">家庭组拼车</button>
-        <button class="seg-item" type="button" data-acq="free_edu">学生/Pixel 赠送 ($0)</button>
-        <button class="seg-item" type="button" data-acq="free_tier">免费层级 ($0)</button>
+        <button class="seg-item on" type="button" data-acq="paid_pro" data-i18n="acqPro">Google AI Pro 自付</button>
+        <button class="seg-item" type="button" data-acq="paid_ultra" data-i18n="acqUltra">AI Ultra 自付</button>
+        <button class="seg-item" type="button" data-acq="family_share" data-i18n="acqFamily">家庭组拼车</button>
+        <button class="seg-item" type="button" data-acq="free_edu" data-i18n="acqEdu">学生/Pixel 赠送 ($0)</button>
+        <button class="seg-item" type="button" data-acq="free_tier" data-i18n="acqFree">免费层级 ($0)</button>
       </div>
 
       <div class="country-grid" id="countryGrid"></div>
 
       <div class="scrubber-box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
         <div>
-          <div style="font-size:11.5px;font-weight:600">自定义实付月费与币种</div>
+          <div style="font-size:11.5px;font-weight:600" data-i18n="customSubFeeTitle">自定义实付月费与币种</div>
           <div style="font-size:10px;color:var(--fg-3)" id="subConversionPreview">折合人民币约 ¥0.00 / 月</div>
         </div>
         <div style="display:flex;gap:7px;align-items:center">
@@ -2022,17 +2031,17 @@ input::-webkit-inner-spin-button {
     <div class="glass-sheet" id="updateSheet">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div>
-          <div style="font-size:14px;font-weight:650">版本状态与 Live-Host 免重启热更新</div>
-          <div style="font-size:10.5px;color:var(--fg-2)" class="mono" id="runtimeVerDiag">Pulse v0.9.0</div>
+          <div style="font-size:14px;font-weight:650" data-i18n="updateSheetTitle">版本状态与 Live-Host 免重启热更新</div>
+          <div style="font-size:10.5px;color:var(--fg-2)" class="mono" id="runtimeVerDiag">Pulse v0.9.1</div>
         </div>
-        <button class="action-btn" type="button" data-close-sheet="updateSheet">关闭</button>
+        <button class="action-btn" type="button" data-close-sheet="updateSheet" data-i18n="btnClose">关闭</button>
       </div>
 
       <div class="scrubber-box" style="flex:1;display:flex;flex-direction:column;justify-content:space-between;gap:10px">
         <div>
           <div style="display:flex;align-items:center;gap:8px">
-            <span class="tag neutral" id="updateStateTag">当前版本 v0.9.0</span>
-            <button class="ghost-link" id="btnCheckUpdateNow" type="button">↻ 立即检查 GitHub Release</button>
+            <span class="tag neutral" id="updateStateTag">当前版本 v0.9.1</span>
+            <button class="ghost-link" id="btnCheckUpdateNow" type="button" data-i18n="btnCheckReleaseNow">↻ 立即检查 GitHub Release</button>
           </div>
           <div style="font-size:11.5px;line-height:1.65;color:var(--fg-2);margin-top:10px;white-space:pre-line" id="updateNotesBox">• Spatial Bento HUD 全新同心双环灵动岛与零滚动驾驶舱架构
 • 支持 Antigravity 2.31+ 共享额度池、请求级上下文预算磁吸注入与三态对账
@@ -2041,11 +2050,11 @@ input::-webkit-inner-spin-button {
 
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
           <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--fg-2)">
-            <span>启动时自动检查更新</span>
+            <span data-i18n="autoUpdateStartupLbl">启动时自动检查更新</span>
             <button class="apple-toggle on" id="toggleAutoUpdate" type="button" aria-label="自动检查更新"></button>
           </div>
           <div style="display:flex;gap:8px">
-            <button class="action-btn" id="btnHardRestartHost" type="button">平滑重启客户端</button>
+            <button class="action-btn" id="btnHardRestartHost" type="button" data-i18n="btnSmoothRestart">平滑重启客户端</button>
             <button class="action-btn primary" id="btnRunHotReload" type="button" disabled>暂无可用更新</button>
           </div>
         </div>
@@ -2126,7 +2135,57 @@ const PULSE_I18N = {
     thAlabaster: '云白磨砂',
     thPitch: '极夜纯黑',
     accentChroma: '强调色与 5 档色阶',
-    auditSheetTitle: '底层请求对账与全格式附件只读扫描'
+    auditSheetTitle: '会话缓存总览与最近一次请求对账',
+    auditSheetSub: '先看整个会话累计缓存复用效率，再向下核对最近一次模型请求与本地附件',
+    backToCockpit: '返回驾驶舱',
+    audSessTitle: '整段会话缓存命中率',
+    audLatestTitle: '最近一次模型请求 (单轮返回)',
+    audAttachTitle: '归档累计与附件明细',
+    btnRescanTxt: '↻ 重新扫描整段归档与附件',
+    speedSheetTitle: '本机实测性能基准与单模型趋势',
+    dmTps: '输出 tok/s',
+    dmTtft: '首字 TTFT',
+    dmDur: '单轮耗时',
+    btnBack: '返回',
+    subSheetTitle: 'AI 订阅地区、汇率折算与获取方式',
+    subSheetSub: '内置 42 个国家/地区汇率预设与家庭共享 / 教育 / 硬件赠送模式',
+    btnSaveBack: '保存并返回',
+    acqPro: 'Google AI Pro 自付',
+    acqUltra: 'AI Ultra 自付',
+    acqFamily: '家庭组拼车',
+    acqEdu: '学生/Pixel 赠送 ($0)',
+    acqFree: '免费层级 ($0)',
+    customSubFeeTitle: '自定义实付月费与币种',
+    updateSheetTitle: '版本状态与 Live-Host 免重启热更新',
+    btnClose: '关闭',
+    btnCheckReleaseNow: '↻ 立即检查 GitHub Release',
+    autoUpdateStartupLbl: '启动时自动检查更新',
+    btnSmoothRestart: '平滑重启客户端',
+    jumpHintBudget: '预算 ›',
+    detDefault: '默认 256K',
+    detMax: '理论最大',
+    vmodeActual: '实际混合',
+    vmodeG31: '按 G3.1 Pro',
+    vmodeOpus: '按 Opus 4.6',
+    brandTranslated: '反重力',
+    chartEmptyHistory: '暂无该周期历史消费记录',
+    duelEmptyBars: '尚无实测流式生成样本，完成一轮模型对话后自动记录各模型速率与首字延迟',
+    duelEmptyTrend: '等待首条有效流式样本...',
+    duelTrendCurveTitle: '{model} 近 {count} 轮实测曲线',
+    duelTrendMedianFmt: '中位数 {tps} tok/s · TTFT {ttft} · n={count}',
+    idleMode: '待机',
+    waitingGen: '等待生成',
+    streamingNow: '流式生成中…',
+    measuringNow: '生成测算中…',
+    measuredRound: '本轮实测',
+    measuredHistory: '上轮实测',
+    tagWeekShort: '周',
+    tagDayShort: '日',
+    tagQuotaShort: '额度',
+    unlockReadyInject: '请求级注入就绪',
+    unlockPendingRestart: '底座已修补 · 待重启生效',
+    unlockDynamicActive: '底座已解锁 DYN',
+    unlockStock256k: '官方默认 256K 锁 (点右下解锁)'
   },
   'zh-TW': {
     navCockpit: '總覽',
@@ -2196,7 +2255,57 @@ const PULSE_I18N = {
     thAlabaster: '雲白磨砂',
     thPitch: '極夜純黑',
     accentChroma: '強調色與 5 檔色階',
-    auditSheetTitle: '底層請求對帳與全格式附件唯讀掃描'
+    auditSheetTitle: '會話快取總覽與最近一次請求對帳',
+    auditSheetSub: '先看整個會話累計快取複用效率，再向下核對最近一次模型請求與本機附件',
+    backToCockpit: '返回駕駛艙',
+    audSessTitle: '整段會話快取命中率',
+    audLatestTitle: '最近一次模型請求 (單輪返回)',
+    audAttachTitle: '歸檔累計與附件明細',
+    btnRescanTxt: '↻ 重新掃描整段歸檔與附件',
+    speedSheetTitle: '本機實測效能基準與單模型趨勢',
+    dmTps: '輸出 tok/s',
+    dmTtft: '首字 TTFT',
+    dmDur: '單輪耗時',
+    btnBack: '返回',
+    subSheetTitle: 'AI 訂閱地區、匯率折算與取得方式',
+    subSheetSub: '內建 42 個國家/地區匯率預設與家庭共享 / 教育 / 硬體贈送模式',
+    btnSaveBack: '儲存並返回',
+    acqPro: 'Google AI Pro 自付',
+    acqUltra: 'AI Ultra 自付',
+    acqFamily: '家庭組共享',
+    acqEdu: '學生/Pixel 贈送 ($0)',
+    acqFree: '免費層級 ($0)',
+    customSubFeeTitle: '自訂實付月費與幣別',
+    updateSheetTitle: '版本狀態與 Live-Host 免重啟熱更新',
+    btnClose: '關閉',
+    btnCheckReleaseNow: '↻ 立即檢查 GitHub Release',
+    autoUpdateStartupLbl: '啟動時自動檢查更新',
+    btnSmoothRestart: '平滑重啟用戶端',
+    jumpHintBudget: '預算 ›',
+    detDefault: '預設 256K',
+    detMax: '理論最大',
+    vmodeActual: '實際混合',
+    vmodeG31: '按 G3.1 Pro',
+    vmodeOpus: '按 Opus 4.6',
+    brandTranslated: '反重力',
+    chartEmptyHistory: '暫無該週期歷史消費紀錄',
+    duelEmptyBars: '尚無實測串流生成樣本，完成一輪對話後自動記錄速率與首字延遲',
+    duelEmptyTrend: '等待首條有效串流樣本...',
+    duelTrendCurveTitle: '{model} 近 {count} 輪實測曲線',
+    duelTrendMedianFmt: '中位數 {tps} tok/s · TTFT {ttft} · n={count}',
+    idleMode: '待機',
+    waitingGen: '等待生成',
+    streamingNow: '串流生成中…',
+    measuringNow: '生成測算中…',
+    measuredRound: '本輪實測',
+    measuredHistory: '上輪實測',
+    tagWeekShort: '週',
+    tagDayShort: '日',
+    tagQuotaShort: '額度',
+    unlockReadyInject: '請求級注入就緒',
+    unlockPendingRestart: '底座已修補 · 待重啟生效',
+    unlockDynamicActive: '底座已解鎖 DYN',
+    unlockStock256k: '官方預設 256K 鎖 (點右下解鎖)'
   },
   'en': {
     navCockpit: 'Live',
@@ -2266,7 +2375,57 @@ const PULSE_I18N = {
     thAlabaster: 'Alabaster',
     thPitch: 'Pitch OLED',
     accentChroma: 'Accent & 5-Step Scale',
-    auditSheetTitle: 'Server Usage Audit & Read-Only Attachment Scan'
+    auditSheetTitle: 'Session Cache Overview & Latest Request Audit',
+    auditSheetSub: 'Review cumulative session cache efficiency above, and inspect the latest model call & attachments below',
+    backToCockpit: 'Back to Live',
+    audSessTitle: 'Session Cache Hit Rate',
+    audLatestTitle: 'Latest Model Request (Single Turn)',
+    audAttachTitle: 'Archive & Attachments',
+    btnRescanTxt: '↻ Rescan Archive & Attachments',
+    speedSheetTitle: 'Measured Speed Benchmark & Model Trend',
+    dmTps: 'Output tok/s',
+    dmTtft: 'TTFT',
+    dmDur: 'Duration',
+    btnBack: 'Back',
+    subSheetTitle: 'Subscription Region, FX & Plan Mode',
+    subSheetSub: '42 regional FX presets with family sharing, student/hardware perks & free tier',
+    btnSaveBack: 'Save & Back',
+    acqPro: 'Google AI Pro',
+    acqUltra: 'AI Ultra',
+    acqFamily: 'Family Share',
+    acqEdu: 'Student / Pixel ($0)',
+    acqFree: 'Free Tier ($0)',
+    customSubFeeTitle: 'Custom Monthly Fee & Currency',
+    updateSheetTitle: 'Version Status & Live-Host Hot Update',
+    btnClose: 'Close',
+    btnCheckReleaseNow: '↻ Check GitHub Release',
+    autoUpdateStartupLbl: 'Auto-check updates on startup',
+    btnSmoothRestart: 'Relaunch Client',
+    jumpHintBudget: 'Budget ›',
+    detDefault: 'Default 256K',
+    detMax: 'Max Cap',
+    vmodeActual: 'Actual Mix',
+    vmodeG31: 'As G3.1 Pro',
+    vmodeOpus: 'As Opus 4.6',
+    brandTranslated: 'Translated',
+    chartEmptyHistory: 'No token usage recorded in this period',
+    duelEmptyBars: 'No streaming speed samples yet — complete a chat turn to record model tok/s & TTFT',
+    duelEmptyTrend: 'Waiting for first valid streaming sample...',
+    duelTrendCurveTitle: '{model} · Last {count} Measured Turns',
+    duelTrendMedianFmt: 'Median {tps} tok/s · TTFT {ttft} · n={count}',
+    idleMode: 'Idle',
+    waitingGen: 'Waiting',
+    streamingNow: 'Streaming…',
+    measuringNow: 'Measuring…',
+    measuredRound: 'Measured',
+    measuredHistory: 'Last Measured',
+    tagWeekShort: 'Wk',
+    tagDayShort: 'Day',
+    tagQuotaShort: 'Pool',
+    unlockReadyInject: 'Request Injection Ready',
+    unlockPendingRestart: 'Patched · Restart Needed',
+    unlockDynamicActive: 'Base Unlocked DYN',
+    unlockStock256k: 'Default 256K Cap (Unlock Below)'
   }
 };
 
@@ -4371,7 +4530,26 @@ function escapeSvgText(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function hexToRgba(colorStr, alpha) {
+  const s = String(colorStr || '').trim();
+  const hexMatch = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hexMatch) {
+    let hex = hexMatch[1];
+    if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  const rgbMatch = s.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (rgbMatch) {
+    return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, ${alpha})`;
+  }
+  return `rgba(56, 189, 248, ${alpha})`;
 }
 
 function formatCompactTokens(val) {
@@ -4387,7 +4565,15 @@ function drawStreamWaveform(canvas, hostEl, points, isStreaming = false) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const dpr = (typeof globalThis !== 'undefined' && globalThis.devicePixelRatio) ? Math.min(globalThis.devicePixelRatio, 3) : 2;
-  const w = 268;
+  let w = 268;
+  try {
+    if (typeof canvas.getBoundingClientRect === 'function') {
+      const rect = canvas.getBoundingClientRect();
+      if (rect && Number.isFinite(rect.width) && rect.width >= 120) {
+        w = Math.round(rect.width);
+      }
+    }
+  } catch {}
   const h = 70;
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
     canvas.width = Math.round(w * dpr);
@@ -4405,7 +4591,11 @@ function drawStreamWaveform(canvas, hostEl, points, isStreaming = false) {
   } catch {}
 
   ctx.save();
-  ctx.scale(dpr, dpr);
+  if (typeof ctx.setTransform === 'function') {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  } else {
+    ctx.scale(dpr, dpr);
+  }
   ctx.clearRect(0, 0, w, h);
 
   if (cleanPts.length === 0) {
@@ -4454,8 +4644,8 @@ function drawStreamWaveform(canvas, hostEl, points, isStreaming = false) {
   ctx.lineTo(0, h);
   ctx.closePath();
   const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, isStreaming ? 'rgba(16, 185, 129, 0.28)' : 'rgba(56, 189, 248, 0.22)');
-  grad.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+  grad.addColorStop(0, isStreaming ? 'rgba(16, 185, 129, 0.28)' : hexToRgba(accent, 0.22));
+  grad.addColorStop(1, isStreaming ? 'rgba(16, 185, 129, 0.0)' : hexToRgba(accent, 0));
   ctx.fillStyle = grad;
   ctx.fill();
 
@@ -4499,11 +4689,14 @@ function renderDailyHeatmapGrid(containerEl, dailySeries, onHoverDay) {
   }
 }
 
-function renderAlternateHistorySvg(svgEl, mode, buckets, onHoverBucket) {
+function renderAlternateHistorySvg(svgEl, mode, buckets, onHoverBucket, lang = 'zh-CN') {
   if (!svgEl) return;
   const rows = Array.isArray(buckets) ? buckets : [];
   if (!rows.length) {
-    svgEl.innerHTML = `<text x="300" y="58" text-anchor="middle" fill="var(--fg-3)" font-size="11">暂无该周期历史消费记录</text>`;
+    const emptyMsg = typeof translatePulseKey === 'function'
+      ? translatePulseKey(lang, 'chartEmptyHistory')
+      : '暂无该周期历史消费记录';
+    svgEl.innerHTML = `<text x="300" y="58" text-anchor="middle" fill="var(--fg-3)" font-size="11">${escapeSvgText(emptyMsg)}</text>`;
     return;
   }
 
@@ -4555,13 +4748,14 @@ function renderAlternateHistorySvg(svgEl, mode, buckets, onHoverBucket) {
   }
 }
 
-function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianEl, speedGroups, metric = 'tps', focusModelKey = '', onSelectGroup = null) {
+function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianEl, speedGroups, metric = 'tps', focusModelKey = '', onSelectGroup = null, lang = 'zh-CN') {
   if (!barsContainer || !trendSvg) return;
   const list = Array.isArray(speedGroups) ? speedGroups : [];
+  const tr = (k, vars) => (typeof translatePulseKey === 'function' ? translatePulseKey(lang, k, vars) : k);
 
   if (!list.length) {
-    barsContainer.innerHTML = `<div style="font-size:11.5px;color:var(--fg-3);padding:16px 0;text-align:center">尚无实测流式生成样本，完成一轮模型对话后自动记录各模型速率与首字延迟</div>`;
-    trendSvg.innerHTML = `<text x="290" y="50" text-anchor="middle" fill="var(--fg-3)" font-size="11">等待首条有效流式样本...</text>`;
+    barsContainer.innerHTML = `<div style="font-size:11.5px;color:var(--fg-3);padding:16px 0;text-align:center">${escapeSvgText(tr('duelEmptyBars'))}</div>`;
+    trendSvg.innerHTML = `<text x="290" y="50" text-anchor="middle" fill="var(--fg-3)" font-size="11">${escapeSvgText(tr('duelEmptyTrend'))}</text>`;
     if (trendMedianEl) trendMedianEl.textContent = 'n = 0';
     return;
   }
@@ -4584,6 +4778,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   barsContainer.innerHTML = sorted.map(item => {
     const key = item.modelExactId || item.key || item.modelLabel;
     const label = item.modelLabel || item.label || key;
+    const safeCount = Math.max(0, Math.trunc(Number(item.count) || 0));
     const rawVal = getMetricValue(item);
     const pct = Math.max(6, Math.min(100, (rawVal / maxMetric) * 100));
     const formatted = metric === 'tps'
@@ -4593,7 +4788,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     return `
       <div data-duel-model="${escapeSvgText(key)}" style="cursor:pointer;padding:3px 5px;border-radius:7px;${isSel ? 'background:var(--pill-bg)' : ''}">
         <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:4px">
-          <span style="font-weight:600">${escapeSvgText(label)} <small style="color:var(--fg-3);font-weight:400">(n=${item.count || 0})</small></span>
+          <span style="font-weight:600">${escapeSvgText(label)} <small style="color:var(--fg-3);font-weight:400">(n=${safeCount})</small></span>
           <span class="mono" style="color:var(--accent-2)">${formatted}</span>
         </div>
         <div class="thin-bar"><i style="width:${pct.toFixed(1)}%;background:linear-gradient(90deg,var(--accent),var(--accent-2))"></i></div>
@@ -4614,11 +4809,16 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
 
   const focusLabel = focusItem.modelLabel || focusItem.label || '';
   const samples = Array.isArray(focusItem?.samples) ? focusItem.samples.slice(-16) : [];
+  const safeFocusCount = Math.max(0, Math.trunc(Number(focusItem.count) || samples.length));
   if (trendTitleEl) {
-    trendTitleEl.textContent = `${focusLabel} 近 ${samples.length} 轮实测曲线`;
+    trendTitleEl.textContent = tr('duelTrendCurveTitle', { model: focusLabel, count: samples.length });
   }
   if (trendMedianEl) {
-    trendMedianEl.textContent = `中位数 ${Number(focusItem.medianTps || 0).toFixed(1)} tok/s · TTFT ${focusItem.medianTtft != null ? focusItem.medianTtft + 's' : '--'} · n=${focusItem.count || samples.length}`;
+    trendMedianEl.textContent = tr('duelTrendMedianFmt', {
+      tps: Number(focusItem.medianTps || 0).toFixed(1),
+      ttft: focusItem.medianTtft != null ? `${focusItem.medianTtft}s` : '--',
+      count: safeFocusCount
+    });
   }
 
   const sampleMetric = (s) => {
@@ -4628,7 +4828,13 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   };
 
   if (samples.length < 2) {
-    const singleVal = samples[0] ? `${Number(samples[0].tps || 0).toFixed(1)} tok/s` : '--';
+    let singleVal = '--';
+    if (samples[0]) {
+      const mVal = sampleMetric(samples[0]);
+      singleVal = metric === 'tps'
+        ? `${mVal.toFixed(1)} tok/s`
+        : (mVal > 0 ? `${mVal.toFixed(2)}s` : '--');
+    }
     trendSvg.innerHTML = `<circle cx="290" cy="44" r="4" fill="var(--accent-2)"></circle><text x="290" y="70" text-anchor="middle" fill="var(--fg-2)" font-size="11" font-family="var(--font-mono)">${escapeSvgText(singleVal)}</text>`;
     return;
   }
@@ -4719,7 +4925,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
 
     // Context Budget (aligned 1:1 with meter-collector & preload cache)
     budgetScope: 'per_model', // 'per_model' | 'unified'
-    unifiedPref: { mode: 'default', limitTokens: 256000 },
+    unifiedPref: { mode: 'default', limitTokens: null },
     contextPreferencesMap: {}, // keyed by productKey / modelId -> { scope, productKey, modelId, label, mode, limitTokens }
     selectedProductKey: '',
     manualBudgetModelSelect: false,
@@ -4729,6 +4935,9 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     lastInjectedLimit: null,
     lastInjectedMode: null,
     lastAdoptedLimit: null,
+    injectedByProduct: new Map(),
+    adoptedByProduct: new Map(),
+    lastTurnStatus: null,
     unlockStatus: null,
 
     // Token Ledger & Subscription FX
@@ -4778,6 +4987,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   const controllers = new Set();
   const intervals = new Set();
   let toastTimer = null;
+  let autoUpdateTimer = null;
 
   function notify(msg) {
     const tEl = el('hudToast');
@@ -4793,7 +5003,11 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   }
 
   // ==================== Dual-Transport Backend Bridge ====================
-  const origFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
+  // 在全局单例上固化原始传输层引用，防止多次热重载叠加包装链
+  if (!globalThis.__agOrigFetch && typeof globalThis.fetch === 'function') {
+    globalThis.__agOrigFetch = globalThis.fetch.bind(globalThis);
+  }
+  const origFetch = globalThis.__agOrigFetch || (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null);
 
   function getLiveBridge() {
     const b = globalThis.__AGContextMeterLive;
@@ -4956,7 +5170,21 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
       const triggers = document.querySelectorAll('[data-testid="model-selector-trigger"]');
       for (const node of triggers) {
         if (host.contains?.(node)) continue;
-        const rawText = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (typeof node.getBoundingClientRect === 'function') {
+          const rect = node.getBoundingClientRect();
+          if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
+        }
+        let cleanSource = node;
+        if (typeof node.cloneNode === 'function') {
+          try {
+            const cloned = node.cloneNode(true);
+            if (typeof cloned.querySelectorAll === 'function') {
+              cloned.querySelectorAll('svg, [aria-hidden="true"], [data-badge], .badge').forEach((elNode) => elNode.remove?.());
+            }
+            cleanSource = cloned;
+          } catch {}
+        }
+        const rawText = String(cleanSource.textContent || '').replace(/\s+/g, ' ').trim();
         if (!rawText) continue;
         const effMatch = rawText.match(/\(([^)]+)\)\s*$/);
         const effort = effMatch ? effMatch[1].trim() : '';
@@ -5157,9 +5385,9 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
 
   function getPreferenceForProduct(prod) {
     if (state.budgetScope === 'unified') {
-      return state.unifiedPref || { mode: 'default', limitTokens: 256000 };
+      return state.unifiedPref || { mode: 'default', limitTokens: null };
     }
-    if (!prod) return { mode: 'default', limitTokens: 256000 };
+    if (!prod) return { mode: 'default', limitTokens: null };
     const direct = state.contextPreferencesMap[prod.productKey] ||
       state.contextPreferencesMap[String(prod.productKey).toLowerCase()];
     if (direct) return direct;
@@ -5168,49 +5396,97 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
         if (state.contextPreferencesMap[mKey]) return state.contextPreferencesMap[mKey];
       }
     }
-    return { mode: 'default', limitTokens: 256000 };
+    return { mode: 'default', limitTokens: null };
+  }
+
+  function computeProductMaxInput(prod) {
+    const targetProd = prod || getProductByKey(state.activeProductKey);
+    return Math.max(16384, Math.min(2097152, (targetProd.maxTokens || 1048576) - (targetProd.maxOutputTokens || 65536)));
   }
 
   function resolveEffectiveTokensForProduct(prod) {
     const targetProd = prod || getProductByKey(state.activeProductKey);
-    const maxInput = Math.max(16384, (targetProd.maxTokens || 1048576) - (targetProd.maxOutputTokens || 65536));
+    const maxInput = computeProductMaxInput(targetProd);
     const pref = getPreferenceForProduct(targetProd);
-    if (!pref || pref.mode === 'default') return Math.min(256000, maxInput);
+    if (!pref || pref.mode === 'default') {
+      // 当底座已解锁为动态跟随时，默认档遵循模型自身的动态预留预算而非死锁 256K
+      if (isBinaryDynamicUnlocked()) {
+        const reserve = Math.max(targetProd.maxOutputTokens || 65536, 40000);
+        const dynDef = (targetProd.maxTokens || 1048576) - reserve;
+        if (dynDef >= 16384) return Math.min(2097152, dynDef);
+      }
+      return Math.min(256000, maxInput);
+    }
     if (pref.mode === 'dynamic') return maxInput;
     const num = Number(pref.limitTokens);
-    if (Number.isFinite(num) && num >= 16384) return num;
-    return 256000;
+    if (Number.isFinite(num) && num >= 16384) return Math.min(2097152, Math.round(num));
+    return Math.min(256000, maxInput);
   }
 
   function buildPrefEntryFromSelection(rawVal, prod) {
     const targetProd = prod || getProductByKey(state.selectedProductKey || state.activeProductKey);
-    const maxInput = Math.max(16384, (targetProd.maxTokens || 1048576) - (targetProd.maxOutputTokens || 65536));
-    const alignedMax = budgetEngine.alignDownTo1K ? budgetEngine.alignDownTo1K(maxInput) : Math.floor(maxInput / 1024) * 1024;
+    const maxInput = computeProductMaxInput(targetProd);
 
-    if (rawVal === 'default' || Number(rawVal) === 256000) {
-      return { mode: 'default', limitTokens: 256000 };
+    // 严格区分「宿主默认模式 (不覆写请求字段)」与「固定 256,000 上限」
+    if (rawVal === 'default') {
+      return { mode: 'default', limitTokens: null };
     }
     if (rawVal === 'dynamic') {
       return { mode: 'dynamic', limitTokens: null };
     }
     if (rawVal === 'max') {
-      return { mode: 'fixed', limitTokens: alignedMax };
+      return { mode: 'fixed', limitTokens: maxInput };
     }
     const clamped = Math.max(16384, Math.min(2097152, Math.round(Number(rawVal) || 256000)));
     return { mode: 'fixed', limitTokens: clamped };
   }
 
+  function isBinaryUnlockSupportedOnHost() {
+    const u = state.unlockStatus;
+    if (!u) return true;
+    if (u.isPlatformSupported === false || u.status === 'unsupported') return false;
+    return true;
+  }
+
+  function isBinaryDynamicUnlocked() {
+    const u = state.unlockStatus;
+    if (!u || !isBinaryUnlockSupportedOnHost()) return false;
+    if (u.status === 'not_patched') return false;
+    return Boolean(u.configuredMode === 'dynamic' || u.unlocked === true || u.status === 'unlocked');
+  }
+
   function isBinaryUnlocked() {
     const u = state.unlockStatus;
-    if (!u) return false;
+    if (!u || !isBinaryUnlockSupportedOnHost()) return false;
+    if (u.status === 'not_patched') return false;
     return Boolean(
       u.unlocked ||
       u.patched ||
       u.configuredMode === 'dynamic' ||
       u.status === 'unlocked' ||
       u.status === 'patched' ||
+      u.status === 'patched_loaded' ||
       (u.configuredMode === 'fixed' && Number(u.configuredLimitTokens) > 256000)
     );
+  }
+
+  function doesSelectionNeedBinaryUnlock(entry, effTok) {
+    if (!isBinaryUnlockSupportedOnHost()) return false;
+    const u = state.unlockStatus;
+    if (entry.mode === 'dynamic') {
+      return !isBinaryDynamicUnlocked();
+    }
+    if (effTok > 256000) {
+      if (isBinaryDynamicUnlocked()) return false;
+      if (u && u.status !== 'not_patched' && u.configuredMode === 'fixed' && Number(u.configuredLimitTokens) >= effTok) {
+        return false;
+      }
+      if (u && (u.unlocked === true || u.patched === true) && !u.configuredMode) {
+        return false;
+      }
+      return true;
+    }
+    return false;
   }
 
   async function saveAndApplyProductBudget(rawVal, prodOverride = null, { autoUnlockBinary = false } = {}) {
@@ -5282,7 +5558,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     }
 
     const effTok = resolveEffectiveTokensForProduct(prod);
-    const needsUnlock = (entry.mode === 'dynamic' || effTok > 256000) && !isBinaryUnlocked();
+    const needsUnlock = doesSelectionNeedBinaryUnlock(entry, effTok);
 
     if (autoUnlockBinary && needsUnlock) {
       notify(`已设为 ${entry.mode === 'dynamic' ? '动态跟随' : formatK(effTok)}，正在自动解锁底座 256K 限制...`);
@@ -5359,20 +5635,42 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   function runBudgetTransformWithActiveFallback(payload, channel, urlOrProc = '', contentType = '') {
     if (typeof budgetEngine.transformOutgoingSendRequest !== 'function') return null;
     let tx = budgetEngine.transformOutgoingSendRequest(payload, buildInterceptorContext(channel, urlOrProc, contentType));
-    if (tx && tx.handled && tx.uninjectable && tx.reason === 'unidentifiable_request_model' && tx.cascadeId && state.activeProductKey) {
+    // 仅当前台窗口可见且该会话尚未绑定其他已知模型时，允许首轮新建会话回退至当前可见模型选择器
+    if (
+      tx &&
+      tx.handled &&
+      tx.uninjectable &&
+      tx.reason === 'unidentifiable_request_model' &&
+      tx.cascadeId &&
+      !state.conversationBindings[tx.cascadeId] &&
+      !document.hidden &&
+      state.activeProductKey
+    ) {
       tx = budgetEngine.transformOutgoingSendRequest(payload, buildInterceptorContext(channel, urlOrProc, contentType, tx.cascadeId));
     }
     return tx;
   }
 
-  function recordSuccessfulInjection(tx) {
+  function recordSuccessfulInjection(tx, dispatchId = null) {
     if (!tx || !tx.handled || tx.uninjectable) return;
-    const activeProd = getProductByKey(tx.productKey && tx.productKey !== '__unified__' ? tx.productKey : state.activeProductKey);
+    const prodKey = tx.productKey && tx.productKey !== '__unified__' ? tx.productKey : state.activeProductKey;
+    const activeProd = getProductByKey(prodKey);
     const targetLimit = resolveEffectiveTokensForProduct(activeProd);
-    state.lastInjectedMode = tx.sentMode;
-    state.lastInjectedLimit = tx.sentMode === 'fixed'
+    const effLimit = tx.sentMode === 'fixed'
       ? tx.sentLimitTokens
       : (tx.sentMode === 'dynamic' ? targetLimit : 256000);
+    state.lastInjectedMode = tx.sentMode;
+    state.lastInjectedLimit = effLimit;
+    if (prodKey) {
+      state.injectedByProduct.set(prodKey, {
+        dispatchId,
+        cascadeId: tx.cascadeId || null,
+        mode: tx.sentMode,
+        limitTokens: effLimit,
+        failed: false,
+        at: Date.now()
+      });
+    }
     if (tx.cascadeId && tx.productKey && tx.productKey !== '__unified__') {
       state.conversationBindings[tx.cascadeId] = {
         productKey: tx.productKey,
@@ -5384,12 +5682,32 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   }
 
   let interceptorInstalled = false;
-  let origWsSend = null;
-  let origXhrOpen = null;
-  let origXhrSend = null;
+  let lastDecoratorDispatch = null;
+
+  function isDuplicateOfRecentDecoratorDispatch(bodyInit, channel, urlStr, contentType) {
+    if (!lastDecoratorDispatch || (Date.now() - lastDecoratorDispatch.at) > 450) return false;
+    try {
+      const probe = budgetEngine.transformOutgoingSendRequest?.(bodyInit, {
+        ...buildInterceptorContext(channel, urlStr, contentType),
+        scopeMode: 'unified',
+        unifiedPreference: { mode: 'default', limitTokens: null }
+      });
+      if (probe && probe.cascadeId && lastDecoratorDispatch.cascadeId && probe.cascadeId !== lastDecoratorDispatch.cascadeId) {
+        return false;
+      }
+      lastDecoratorDispatch = null;
+      return true;
+    } catch {
+      lastDecoratorDispatch = null;
+      return true;
+    }
+  }
 
   function tryRewriteSendBody(bodyInit, channel = 'fetch', urlStr = '', contentType = '') {
     try {
+      if (isDuplicateOfRecentDecoratorDispatch(bodyInit, channel, urlStr, contentType)) {
+        return bodyInit;
+      }
       const tx = runBudgetTransformWithActiveFallback(bodyInit, channel, urlStr, contentType);
       if (tx && tx.handled) {
         recordSuccessfulInjection(tx);
@@ -5410,10 +5728,30 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
         if (!reqObj || typeof reqObj !== 'object') return null;
         const tx = runBudgetTransformWithActiveFallback(reqObj, channel, 'SendUserCascadeMessage');
         if (tx && tx.handled && !tx.uninjectable) {
-          recordSuccessfulInjection(tx);
-          return { dispatchId: `pulse_${Date.now()}` };
+          const dispatchId = `pulse_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          lastDecoratorDispatch = {
+            dispatchId,
+            cascadeId: tx.cascadeId || reqObj.cascadeId || null,
+            productKey: tx.productKey || state.activeProductKey || null,
+            at: Date.now()
+          };
+          recordSuccessfulInjection(tx, dispatchId);
+          return { dispatchId };
         }
         return null;
+      };
+
+      globalThis.__AG_METER_ON_SEND_RESULT__ = (info = {}) => {
+        if (!info || info.ok !== false) return;
+        const failedId = info.dispatchId || null;
+        if (failedId) {
+          for (const [pk, rec] of state.injectedByProduct.entries()) {
+            if (rec && rec.dispatchId === failedId) {
+              state.injectedByProduct.set(pk, { ...rec, failed: true });
+            }
+          }
+          renderBudgetSpace();
+        }
       };
 
       if (origFetch) {
@@ -5421,36 +5759,69 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
           const urlStr = typeof input === 'string' ? input : (input?.url || '');
           const isSendRpc = (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) ||
             urlStr.includes('SendUserCascadeMessage');
-          if (isSendRpc && init && init.body) {
-            const hdrs = init.headers;
-            const ct = typeof hdrs?.get === 'function'
-              ? (hdrs.get('content-type') || '')
-              : (hdrs?.['content-type'] || hdrs?.['Content-Type'] || '');
-            init = { ...init, body: tryRewriteSendBody(init.body, 'fetch', urlStr, ct) };
+          if (isSendRpc) {
+            if (init && init.body) {
+              const hdrs = init.headers;
+              const ct = typeof hdrs?.get === 'function'
+                ? (hdrs.get('content-type') || '')
+                : (hdrs?.['content-type'] || hdrs?.['Content-Type'] || '');
+              init = { ...init, body: tryRewriteSendBody(init.body, 'fetch', urlStr, ct) };
+            } else if (input && typeof input === 'object' && typeof input.clone === 'function' && typeof input.arrayBuffer === 'function') {
+              try {
+                const ct = typeof input.headers?.get === 'function' ? (input.headers.get('content-type') || '') : '';
+                const rawBytes = new Uint8Array(await input.clone().arrayBuffer());
+                if (rawBytes.length > 0) {
+                  const nextBytes = tryRewriteSendBody(rawBytes, 'fetch', urlStr, ct);
+                  if (nextBytes !== rawBytes && typeof globalThis.Request === 'function') {
+                    input = new globalThis.Request(input, { body: nextBytes });
+                  }
+                }
+              } catch {}
+            }
           }
           return origFetch(input, init);
         };
       }
 
       if (typeof globalThis.WebSocket === 'function' && globalThis.WebSocket.prototype?.send) {
-        origWsSend = globalThis.WebSocket.prototype.send;
+        if (!globalThis.__agOrigWsSend) {
+          globalThis.__agOrigWsSend = globalThis.WebSocket.prototype.send;
+        }
+        const rawWsSend = globalThis.__agOrigWsSend;
         globalThis.WebSocket.prototype.send = function (data) {
           const next = tryRewriteSendBody(data, 'ws_frame', this?.url || '');
-          return origWsSend.call(this, next);
+          return rawWsSend.call(this, next);
         };
       }
 
       if (typeof globalThis.XMLHttpRequest === 'function' && globalThis.XMLHttpRequest.prototype) {
-        origXhrOpen = globalThis.XMLHttpRequest.prototype.open;
-        origXhrSend = globalThis.XMLHttpRequest.prototype.send;
+        if (!globalThis.__agOrigXhrOpen) globalThis.__agOrigXhrOpen = globalThis.XMLHttpRequest.prototype.open;
+        if (!globalThis.__agOrigXhrSend) globalThis.__agOrigXhrSend = globalThis.XMLHttpRequest.prototype.send;
+        if (!globalThis.__agOrigXhrSetHeader && globalThis.XMLHttpRequest.prototype.setRequestHeader) {
+          globalThis.__agOrigXhrSetHeader = globalThis.XMLHttpRequest.prototype.setRequestHeader;
+        }
+        const rawXhrOpen = globalThis.__agOrigXhrOpen;
+        const rawXhrSend = globalThis.__agOrigXhrSend;
+        const rawXhrSetHeader = globalThis.__agOrigXhrSetHeader;
         globalThis.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
           this.__pulseUrl = String(url || '');
-          return origXhrOpen.call(this, method, url, ...rest);
+          this.__pulseCt = '';
+          return rawXhrOpen.call(this, method, url, ...rest);
         };
+        if (rawXhrSetHeader) {
+          globalThis.XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+            if (String(name || '').toLowerCase() === 'content-type') {
+              this.__pulseCt = String(value || '');
+            }
+            return rawXhrSetHeader.call(this, name, value);
+          };
+        }
         globalThis.XMLHttpRequest.prototype.send = function (body) {
           const u = this.__pulseUrl || '';
-          const next = u.includes('SendUserCascadeMessage') ? tryRewriteSendBody(body, 'xhr', u) : body;
-          return origXhrSend.call(this, next);
+          const isSend = (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(u)) ||
+            u.includes('SendUserCascadeMessage');
+          const next = isSend ? tryRewriteSendBody(body, 'xhr', u, this.__pulseCt || '') : body;
+          return rawXhrSend.call(this, next);
         };
       }
     } catch {}
@@ -5461,10 +5832,20 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     interceptorInstalled = false;
     try {
       if (origFetch) globalThis.fetch = origFetch;
-      if (origWsSend && globalThis.WebSocket?.prototype) globalThis.WebSocket.prototype.send = origWsSend;
-      if (origXhrOpen && globalThis.XMLHttpRequest?.prototype) globalThis.XMLHttpRequest.prototype.open = origXhrOpen;
-      if (origXhrSend && globalThis.XMLHttpRequest?.prototype) globalThis.XMLHttpRequest.prototype.send = origXhrSend;
+      if (globalThis.__agOrigWsSend && globalThis.WebSocket?.prototype) {
+        globalThis.WebSocket.prototype.send = globalThis.__agOrigWsSend;
+      }
+      if (globalThis.__agOrigXhrOpen && globalThis.XMLHttpRequest?.prototype) {
+        globalThis.XMLHttpRequest.prototype.open = globalThis.__agOrigXhrOpen;
+      }
+      if (globalThis.__agOrigXhrSetHeader && globalThis.XMLHttpRequest?.prototype) {
+        globalThis.XMLHttpRequest.prototype.setRequestHeader = globalThis.__agOrigXhrSetHeader;
+      }
+      if (globalThis.__agOrigXhrSend && globalThis.XMLHttpRequest?.prototype) {
+        globalThis.XMLHttpRequest.prototype.send = globalThis.__agOrigXhrSend;
+      }
       delete globalThis.__AG_METER_ON_SEND_MESSAGE__;
+      delete globalThis.__AG_METER_ON_SEND_RESULT__;
     } catch {}
   }
 
@@ -5514,7 +5895,13 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   // ==================== Settings Persistence (Exact meter-collector Schema) ====================
   async function persistUiAndPlanSettings() {
     const isZero = state.subAcqMode === 'free_edu' || state.subAcqMode === 'free_tier';
-    const acqMap = { paid_pro: 'normal_paid', paid_ultra: 'normal_paid', free_edu: 'student_offer', free_tier: 'family_sharing' };
+    const acqMap = {
+      paid_pro: 'normal_paid',
+      paid_ultra: 'normal_paid',
+      family_share: 'family_sharing',
+      free_edu: 'student_offer',
+      free_tier: 'free_tier'
+    };
     const payload = {
       panelLanguage: state.panelLang,
       autoCheckUpdate: state.autoCheckUpdate,
@@ -5588,7 +5975,8 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     if (Number.isFinite(paidNum) && paidNum >= 0) state.subPrice = paidNum;
     if (plan.acquisitionMode) state.subAcqMode = plan.acquisitionMode;
     else if (plan.acquisitionSource === 'student_offer') state.subAcqMode = 'free_edu';
-    else if (plan.acquisitionSource === 'family_sharing') state.subAcqMode = 'free_tier';
+    else if (plan.acquisitionSource === 'family_sharing') state.subAcqMode = 'family_share';
+    else if (plan.acquisitionSource === 'free_tier') state.subAcqMode = 'free_tier';
   }
 
   async function restoreSettingsFromHost() {
@@ -5609,10 +5997,20 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
       });
       if (res?.ok) hydrateSettingsResponse(res);
     } catch {}
+    if (inheritedState) applyInheritedState(inheritedState);
     applyThemeAndChroma();
     applyStaticTranslations();
     el('toggleAutoUpdate')?.classList.toggle('on', state.autoCheckUpdate);
     renderAll();
+    if (!state.disposed && state.autoCheckUpdate !== false) {
+      clearTimeout(autoUpdateTimer);
+      autoUpdateTimer = setTimeout(() => {
+        if (!state.disposed && state.autoCheckUpdate !== false) {
+          void checkReleaseUpdate({ silent: true, force: false });
+        }
+      }, 4500);
+      autoUpdateTimer?.unref?.();
+    }
   }
 
   // ==================== Real-Time Poll, Speed Telemetry & Quota ====================
@@ -5717,36 +6115,54 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     const tid = setTimeout(() => ctrl.abort(), 10000);
     try {
       // On initial load of a conversation, fetch full metadata (offset 0) so we get ALL session calls & speed telemetry!
-      const offset = state.sessionCallsMap.size === 0 ? 0 : Math.max(0, state.count - 6);
-      const res = await origFetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Connect-Protocol-Version': '1',
-          'x-codeium-csrf-token': csrf
-        },
-        body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: offset, includeMessages: false }),
-        signal: ctrl.signal
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      let offset = state.sessionCallsMap.size === 0 ? 0 : Math.max(0, state.count - 6);
+      const fetchWithOffset = async (off) => {
+        const r = await origFetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
+            'x-codeium-csrf-token': csrf
+          },
+          body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: off, includeMessages: false }),
+          signal: ctrl.signal
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return await r.json();
+      };
+      let data = await fetchWithOffset(offset);
       if (gen !== state.generation || state.disposed) return;
-      const rows = Array.isArray(data?.generatorMetadata) ? data.generatorMetadata : [];
-      state.count = rows.length ? offset + rows.length : state.count;
+      let rows = Array.isArray(data?.generatorMetadata) ? data.generatorMetadata : [];
+      // 会话消息撤回或编辑截断后 offset 可能超出新总长，自动归零重拉完整轨迹
+      if (rows.length === 0 && offset > 0) {
+        offset = 0;
+        state.count = 0;
+        state.sessionCallsMap.clear();
+        data = await fetchWithOffset(0);
+        if (gen !== state.generation || state.disposed) return;
+        rows = Array.isArray(data?.generatorMetadata) ? data.generatorMetadata : [];
+      }
+      state.count = rows.length ? offset + rows.length : (offset === 0 ? 0 : state.count);
 
       const finalBatch = [];
+      let lastParsedStatus = null;
       for (let i = 0; i < rows.length; i++) {
         const call = typeof core.parseGeneratorCall === 'function'
           ? core.parseGeneratorCall(rows[i], id, 'desktop', { cascadeModelConfigs: state.cascadeModelConfigs })
           : null;
         if (call && call.callId) {
           state.sessionCallsMap.set(call.callId, call);
-          if (call.status === 'final' && !state.pendingFinalCalls.has(call.callId)) {
-            state.pendingFinalCalls.set(call.callId, true);
-            finalBatch.push(call);
+          lastParsedStatus = call.status || lastParsedStatus;
+          if (call.status === 'final') {
+            const sig = `${call.status}:${call.outputTokens || 0}:${call.tps ?? ''}`;
+            if (state.pendingFinalCalls.get(call.callId) !== sig) {
+              state.pendingFinalCalls.set(call.callId, sig);
+              finalBatch.push({ call, sig });
+            }
           }
         }
       }
+      state.lastTurnStatus = lastParsedStatus;
 
       state.sessionCalls = Array.from(state.sessionCallsMap.values());
       state.sessionCostTotal = state.sessionCalls.reduce((s, c) => s + (c.isPriced ? Number(c.costUSD || 0) : 0), 0);
@@ -5754,13 +6170,34 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
       state.lastRoundCost = lastPriced ? Number(lastPriced.costUSD) : 0;
 
       if (finalBatch.length > 0) {
-        void callBackend({
-          ipcFn: typeof globalThis.contextMeterAPI?.recordCalls === 'function'
-            ? () => globalThis.contextMeterAPI.recordCalls(finalBatch)
-            : null,
-          liveRoute: '/record-calls',
-          body: { calls: finalBatch }
-        }).catch(() => {});
+        void (async () => {
+          for (let start = 0; start < finalBatch.length; start += 250) {
+            const slice = finalBatch.slice(start, start + 250);
+            const callsChunk = slice.map((item) => item.call);
+            try {
+              const r = await callBackend({
+                ipcFn: typeof globalThis.contextMeterAPI?.recordCalls === 'function'
+                  ? () => globalThis.contextMeterAPI.recordCalls(callsChunk)
+                  : null,
+                liveRoute: '/record-calls',
+                body: { calls: callsChunk }
+              });
+              if (r && r.ok === false) {
+                for (const item of slice) {
+                  if (state.pendingFinalCalls.get(item.call.callId) === item.sig) {
+                    state.pendingFinalCalls.delete(item.call.callId);
+                  }
+                }
+              }
+            } catch {
+              for (const item of slice) {
+                if (state.pendingFinalCalls.get(item.call.callId) === item.sig) {
+                  state.pendingFinalCalls.delete(item.call.callId);
+                }
+              }
+            }
+          }
+        })();
       }
 
       let latestSummary = null;
@@ -5783,6 +6220,10 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
         state.latest = latestSummary;
         if (Number(latestSummary.budget) > 0) {
           state.lastAdoptedLimit = Number(latestSummary.budget);
+          const pk = state.activeProductKey || groupProductSafe({ modelId: latestSummary.modelId || latestSummary.model, label: latestSummary.model }).productKey;
+          if (pk) {
+            state.adoptedByProduct.set(pk, { budget: Number(latestSummary.budget), cascadeId: id, at: Date.now() });
+          }
         }
         state.isStreaming = latestSummary.status === 'pending';
       } else {
@@ -6109,7 +6550,12 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
         liveRoute: '/context-unlock-status',
         body: {}
       });
-      if (uRes?.ok && uRes.data) state.unlockStatus = uRes.data;
+      if (uRes?.ok && uRes.data) {
+        state.unlockStatus = uRes.data;
+        if (uRes.data.status === 'patched_pending_restart') {
+          state.restartRequired = true;
+        }
+      }
     } catch {}
 
     try {
@@ -6174,6 +6620,11 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   }
 
   function computeCallCacheSavedUSD(call) {
+    if (typeof core.calculateNetCacheSavedUSD === 'function') {
+      try {
+        return core.calculateNetCacheSavedUSD(call);
+      } catch (_) {}
+    }
     const inp = Math.max(0, Number(call?.inputTokens || 0));
     const cap = Math.max(0, Number(call?.cacheReadTokens ?? call?.cacheTokens ?? 0));
     if (cap <= 0) return 0;
@@ -6186,10 +6637,11 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
           ...call,
           inputTokens: inp + cap,
           cacheTokens: 0,
-          cacheReadTokens: 0
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0
         });
-        if (uncached?.isPriced && Number(uncached.costUSD) >= actualCost) {
-          return Math.max(0, Number(uncached.costUSD) - actualCost);
+        if (uncached?.isPriced) {
+          return Number(uncached.costUSD) - actualCost;
         }
       } catch (_) {}
     }
@@ -6342,7 +6794,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     }
     if (el('heroPctTxt')) el('heroPctTxt').textContent = `${pct.toFixed(1)}%`;
     if (el('heroSourceMode')) {
-      el('heroSourceMode').textContent = latest ? (latest.estimated ? t('estimatedMode') : t('actualMeasured')) : '待机';
+      el('heroSourceMode').textContent = latest ? (latest.estimated ? t('estimatedMode') : t('actualMeasured')) : t('idleMode');
     }
     if (el('sessionCostTxt')) {
       el('sessionCostTxt').textContent = `本轮 $${state.lastRoundCost.toFixed(3)} · 会话 $${state.sessionCostTotal.toFixed(2)}`;
@@ -6404,7 +6856,8 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
       if (tipCacheEl) { tipCacheEl.textContent = `${sessPct.toFixed(1)}% · 首轮建库`; tipCacheEl.style.color = 'var(--accent-2)'; }
     } else {
       const sessColor = sessPct >= 50 ? 'var(--emerald)' : (sessPct >= 20 ? 'var(--amber)' : 'var(--fg-2)');
-      const savedFmt = cacheStats.sessSavedUSD >= 0.01 ? `$${cacheStats.sessSavedUSD.toFixed(2)}` : `$${cacheStats.sessSavedUSD.toFixed(3)}`;
+      const absSaved = Math.abs(cacheStats.sessSavedUSD);
+      const savedFmt = `${cacheStats.sessSavedUSD < 0 ? '-' : ''}$${absSaved >= 0.01 ? absSaved.toFixed(2) : absSaved.toFixed(3)}`;
       if (heroCachePctEl) { heroCachePctEl.textContent = `${sessPct.toFixed(1)}%`; heroCachePctEl.style.color = sessColor; }
       if (heroCacheSubEl) heroCacheSubEl.textContent = `· 省 ${savedFmt}`;
       if (cacheBarFillEl) cacheBarFillEl.style.width = `${Math.min(100, Math.max(4, sessPct)).toFixed(1)}%`;
@@ -6462,13 +6915,14 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     if (tpsTag) {
       if (state.isStreaming) {
         tpsTag.className = 'tag';
-        tpsTag.textContent = state.liveTps != null ? '流式生成中…' : '生成测算中…';
+        tpsTag.textContent = state.liveTps != null ? t('streamingNow') : t('measuringNow');
       } else if (state.liveTps != null) {
-        tpsTag.className = 'tag';
-        tpsTag.textContent = '本轮实测';
+        const isLastFinal = !state.lastTurnStatus || state.lastTurnStatus === 'final';
+        tpsTag.className = isLastFinal ? 'tag' : 'tag neutral';
+        tpsTag.textContent = isLastFinal ? t('measuredRound') : t('measuredHistory');
       } else {
         tpsTag.className = 'tag neutral';
-        tpsTag.textContent = '等待生成';
+        tpsTag.textContent = t('waitingGen');
       }
     }
     drawStreamWaveform(el('waveCanvas'), host, state.wavePoints, state.isStreaming);
@@ -6495,16 +6949,16 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   function classifyBucketWindow(b, nowMs = Date.now()) {
     const raw = [b?.windowKey, b?.windowShort, b?.window, b?.windowLabel, b?.bucketId].filter(Boolean).join(' ').toLowerCase();
     if (/5h|hour|5小时/.test(raw)) return { kind: '5h', tag: '5h', order: 1 };
-    if (/weekly|7d|week|168h|周/.test(raw)) return { kind: 'weekly', tag: '周', order: 2 };
-    if (/daily|24h|day|日/.test(raw)) return { kind: 'daily', tag: '日', order: 3 };
+    if (/weekly|7d|week|168h|168_hours|周/.test(raw)) return { kind: 'weekly', tag: t('tagWeekShort'), order: 2 };
+    if (/daily|24h|24_hours|day|日/.test(raw)) return { kind: 'daily', tag: t('tagDayShort'), order: 3 };
     const rMs = typeof b?.resetAtMs === 'number' ? b.resetAtMs : (b?.resetTimeIso ? Date.parse(b.resetTimeIso) : NaN);
     if (Number.isFinite(rMs) && (rMs - nowMs) > 12 * 3600 * 1000) {
-      return { kind: 'weekly', tag: '周', order: 2 };
+      return { kind: 'weekly', tag: t('tagWeekShort'), order: 2 };
     }
     if (Number.isFinite(rMs) && (rMs - nowMs) > 0) {
       return { kind: '5h', tag: '5h', order: 1 };
     }
-    return { kind: 'other', tag: '额度', order: 4 };
+    return { kind: 'other', tag: t('tagQuotaShort'), order: 4 };
   }
 
   function shortenPoolTitle(rawTitle, poolKey = '') {
@@ -6650,7 +7104,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     if (grid) {
       const colCount = Math.max(1, Math.min(4, pools.length));
       grid.style.gridTemplateColumns = `repeat(${colCount}, 1fr)`;
-      grid.innerHTML = pools.map((p, idx) => {
+      const nextGridHtml = pools.map((p, idx) => {
         const isSel = p.key === primary.key;
         if (p.noPermission) {
           return `
@@ -6713,12 +7167,33 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
           </div>`;
       }).join('');
 
-      qsa('.pool-mini-card', grid).forEach(card => {
-        card.addEventListener('click', () => {
-          state.selectedPoolKey = card.dataset.pkey;
-          renderQuotaSection();
+      // 仅在渲染签名变化时更新 DOM 并使用容器级事件委托，防止每秒心跳销毁点击中的节点
+      if (!grid.__pulseDelegated) {
+        grid.__pulseDelegated = true;
+        grid.addEventListener('click', (ev) => {
+          let cur = ev?.target || null;
+          if (cur && typeof cur.closest === 'function') {
+            const hit = cur.closest('.pool-mini-card');
+            if (hit && hit.dataset?.pkey) {
+              state.selectedPoolKey = hit.dataset.pkey;
+              renderQuotaSection();
+              return;
+            }
+          }
+          while (cur && cur !== grid) {
+            if (cur.dataset?.pkey) {
+              state.selectedPoolKey = cur.dataset.pkey;
+              renderQuotaSection();
+              return;
+            }
+            cur = cur.parentNode;
+          }
         });
-      });
+      }
+      if (grid.__lastHtml !== nextGridHtml) {
+        grid.innerHTML = nextGridHtml;
+        grid.__lastHtml = nextGridHtml;
+      }
     }
   }
 
@@ -6768,58 +7243,98 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     }
 
     const selProd = getProductByKey(state.selectedProductKey);
-    const maxInput = Math.max(16384, (selProd.maxTokens || 1048576) - (selProd.maxOutputTokens || 65536));
-    const alignedMax = budgetEngine.alignDownTo1K ? budgetEngine.alignDownTo1K(maxInput) : maxInput;
+    const maxInput = computeProductMaxInput(selProd);
     const pref = getPreferenceForProduct(selProd);
     const curVal = resolveEffectiveTokensForProduct(selProd);
 
     if (el('bModelTitle')) el('bModelTitle').textContent = selProd.label;
     if (el('bSpecWin')) el('bSpecWin').textContent = (selProd.maxTokens || 0).toLocaleString();
     if (el('bSpecOut')) el('bSpecOut').textContent = (selProd.maxOutputTokens || 0).toLocaleString();
-    if (el('bSpecMax')) el('bSpecMax').textContent = alignedMax.toLocaleString();
+    if (el('bSpecMax')) el('bSpecMax').textContent = maxInput.toLocaleString();
+    if (el('budgetHintRange')) {
+      el('budgetHintRange').textContent = `拖动滑轨或输入精确预算 (16,384 – ${maxInput.toLocaleString()})`;
+    }
 
     const slider = el('budgetSlider');
     const numInput = el('exactTokenInput');
-    if (slider && shadow.activeElement !== slider) slider.value = String(curVal);
-    if (numInput && shadow.activeElement !== numInput) numInput.value = String(curVal);
+    if (slider) {
+      slider.setAttribute('max', String(maxInput));
+      slider.max = String(maxInput);
+      if (shadow.activeElement !== slider) slider.value = String(Math.min(curVal, maxInput));
+    }
+    if (numInput) {
+      numInput.setAttribute('max', String(maxInput));
+      numInput.max = String(maxInput);
+      if (shadow.activeElement !== numInput) numInput.value = String(curVal);
+    }
 
     qsa('#detentBtns button').forEach(b => {
       const det = b.dataset.det;
       let match = false;
-      if (det === 'default') match = !pref || pref.mode === 'default' || (pref.mode === 'fixed' && curVal === 256000);
+      if (det === 'default') match = !pref || pref.mode === 'default';
       else if (det === 'dynamic') match = pref?.mode === 'dynamic';
-      else if (det === 'max') match = pref?.mode === 'fixed' && Math.abs(curVal - alignedMax) <= 1024;
+      else if (det === 'max') match = pref?.mode === 'fixed' && Math.abs(curVal - maxInput) <= 1024;
       else match = pref?.mode === 'fixed' && Number(det) === curVal;
       b.classList.toggle('on', match);
     });
 
     if (el('pipeSaved')) {
-      el('pipeSaved').textContent = pref?.mode === 'dynamic' ? `DYN (${formatK(curVal)})` : curVal.toLocaleString();
+      el('pipeSaved').textContent = pref?.mode === 'dynamic'
+        ? `DYN (${formatK(curVal)})`
+        : (!pref || pref.mode === 'default' ? `默认 (${formatK(curVal)})` : curVal.toLocaleString());
     }
+    const scopedInj = state.budgetScope === 'unified'
+      ? (state.lastInjectedLimit ? { mode: state.lastInjectedMode, limitTokens: state.lastInjectedLimit, failed: false } : null)
+      : (state.injectedByProduct.get(selProd.productKey) || null);
     if (el('pipeSent')) {
-      el('pipeSent').textContent = state.lastInjectedLimit
-        ? (state.lastInjectedMode === 'dynamic' ? 'DYN 放行' : state.lastInjectedLimit.toLocaleString())
-        : '下一条消息注入';
+      if (scopedInj?.failed) {
+        el('pipeSent').textContent = '发送失败';
+      } else if (scopedInj?.limitTokens) {
+        el('pipeSent').textContent = scopedInj.mode === 'dynamic'
+          ? 'DYN 放行'
+          : (scopedInj.mode === 'default' ? '宿主默认' : scopedInj.limitTokens.toLocaleString());
+      } else {
+        el('pipeSent').textContent = '下一条消息注入';
+      }
     }
+    const scopedAdp = state.adoptedByProduct.get(selProd.productKey) ||
+      (selProd.productKey === state.activeProductKey && (state.lastAdoptedLimit || state.latest?.budget)
+        ? { budget: Number(state.lastAdoptedLimit || state.latest?.budget) }
+        : null);
     if (el('pipeAdopted')) {
-      const adopted = state.lastAdoptedLimit || state.latest?.budget || null;
+      const adopted = scopedAdp?.budget || null;
       el('pipeAdopted').textContent = adopted ? `${Number(adopted).toLocaleString()} ✓` : '待会话返回';
     }
 
     const binBadge = el('binaryUnlockBadge');
+    const restoreBtn = el('btnRestoreBin');
+    const applyBtn = el('btnApplyBudget');
+    const unlockSupported = isBinaryUnlockSupportedOnHost();
+    if (restoreBtn) restoreBtn.hidden = !unlockSupported;
+    if (applyBtn) {
+      applyBtn.textContent = unlockSupported ? t('saveAndSyncBin') : t('savePrefOnly');
+    }
     if (binBadge) {
-      if (state.unlockStatus?.status === 'patched_pending_restart') {
+      if (!unlockSupported) {
+        binBadge.className = 'tag neutral';
+        binBadge.textContent = t('unlockReadyInject');
+      } else if (state.unlockStatus?.status === 'patched_pending_restart') {
         binBadge.className = 'tag warn';
-        binBadge.textContent = '底座已修补 · 待重启生效';
+        binBadge.textContent = t('unlockPendingRestart');
+      } else if (isBinaryDynamicUnlocked()) {
+        binBadge.className = 'tag';
+        binBadge.textContent = t('unlockDynamicActive');
       } else if (isBinaryUnlocked()) {
         binBadge.className = 'tag';
-        binBadge.textContent = '底座已解锁 DYN';
+        binBadge.textContent = state.unlockStatus?.configuredLimitTokens
+          ? `底座固定 ${formatK(state.unlockStatus.configuredLimitTokens)}`
+          : t('unlockDynamicActive');
       } else if (state.unlockStatus) {
         binBadge.className = 'tag warn';
-        binBadge.textContent = '官方默认 256K 锁 (点右下解锁)';
+        binBadge.textContent = t('unlockStock256k');
       } else {
         binBadge.className = 'tag neutral';
-        binBadge.textContent = '请求级注入就绪';
+        binBadge.textContent = t('unlockReadyInject');
       }
     }
   }
@@ -6944,8 +7459,15 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
 
     const ledgerPromptTotal = totalInp + totalCap;
     const ledgerHitPct = ledgerPromptTotal > 0 ? (totalCap / ledgerPromptTotal) * 100 : null;
-    const saveDeltaPerM = state.valuationMode === 'claude-opus-4-6-thinking' ? (4.00 - 0.20) : (1.50 - 0.075);
-    const ledgerSavedUSD = (totalCap / 1e6) * saveDeltaPerM;
+    const valModelForSave = state.valuationMode === 'claude-opus-4-6-thinking' ? 'claude-opus-5-5' : 'gemini-4-hydrogen';
+    const ledgerSavedUSD = typeof core.calculateNetCacheSavedUSD === 'function'
+      ? core.calculateNetCacheSavedUSD({
+          model: valModelForSave,
+          inputTokens: totalInp,
+          cacheReadTokens: totalCap,
+          outputTokens: totalOut
+        })
+      : ((totalCap / 1e6) * (state.valuationMode === 'claude-opus-4-6-thinking' ? (4.00 - 0.20) : (1.50 - 0.075)));
     if (el('ledgerCacheSummary')) {
       el('ledgerCacheSummary').textContent = ledgerHitPct !== null
         ? `缓存命中 ${ledgerHitPct.toFixed(1)}% · 累计省 $${ledgerSavedUSD.toFixed(2)}`
@@ -6983,8 +7505,11 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     const effPrice = isFreeMode ? 0 : Number(state.subPrice || 0);
     const cnyMonthly = typeof core.convertToCNY === 'function'
       ? Number(core.convertToCNY(effPrice, state.subCurrency) || 0)
-      : effPrice * 7.2;
-    const usdMonthly = cnyMonthly / 7.22;
+      : effPrice * 7.22;
+    // USD 订阅直接使用原值计算美元月费，避免经 CNY 中转二次换算引入汇率舍入偏差
+    const usdMonthly = String(state.subCurrency || '').toUpperCase() === 'USD'
+      ? effPrice
+      : (cnyMonthly / 7.22);
     const sym = (core.CURRENCY_SYMBOLS && core.CURRENCY_SYMBOLS[state.subCurrency]) || state.subCurrency;
 
     if (el('roiMultTxt')) {
@@ -7033,22 +7558,29 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
       if (dailyWrap) dailyWrap.style.display = 'none';
       if (altSvg) altSvg.style.display = 'block';
       const bucketMap = new Map();
-      for (let idx = 0; idx < paddedSeries.length; idx++) {
-        const item = paddedSeries[idx];
+      // 年度与全周期累计视图使用完整历史天数聚合，避免被 252 天分页切片截断早期记录
+      const sourceSeries = (state.heatMode === 'yearly' || state.heatMode === 'cum') && days.length > 0
+        ? days
+        : paddedSeries;
+      if ((state.heatMode === 'yearly' || state.heatMode === 'cum') && days.length > 0 && el('hmPeriodLbl')) {
+        el('hmPeriodLbl').textContent = `${days[0].date} – ${days[days.length - 1].date}`;
+      }
+      for (let idx = 0; idx < sourceSeries.length; idx++) {
+        const item = sourceSeries[idx];
         const key = state.heatMode === 'weekly'
           ? `W${Math.floor(idx / 7) + 1}`
           : state.heatMode === 'monthly'
             ? item.date.slice(0, 7)
             : state.heatMode === 'yearly'
               ? item.date.slice(0, 4)
-              : item.date.slice(5);
+              : item.date;
         const cur = bucketMap.get(key) || { shortLabel: key.slice(-5), total: 0, date: key };
         cur.total += item.total;
         bucketMap.set(key, cur);
       }
       renderAlternateHistorySvg(altSvg, state.heatMode, Array.from(bucketMap.values()), (b) => {
         if (hoverEl) hoverEl.textContent = `${b.date} · 合计 ${formatCompactTokens(b.total)} tok`;
-      });
+      }, state.panelLang);
     }
   }
 
@@ -7187,7 +7719,8 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
       (clickedModelKey) => {
         state.duelFocusModel = clickedModelKey;
         renderSpeedSheet();
-      }
+      },
+      state.panelLang
     );
   }
 
@@ -7307,6 +7840,12 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   el('dynamicIsland')?.addEventListener('click', () => {
     toggleHud(!state.hudOpen);
   });
+  el('dynamicIsland')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault?.();
+      toggleHud(!state.hudOpen);
+    }
+  });
 
   el('btnHideHud')?.addEventListener('click', () => toggleHud(false));
 
@@ -7339,6 +7878,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     btn.addEventListener('click', () => {
       state.panelLang = normalizePulseLang(btn.dataset.plang);
       applyStaticTranslations();
+      renderAll();
       void persistUiAndPlanSettings();
     });
   });
@@ -7430,21 +7970,27 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     });
   });
 
+  const resolveCurrentBudgetInputSelection = (selProd) => {
+    const curPref = getPreferenceForProduct(selProd);
+    const curEff = resolveEffectiveTokensForProduct(selProd);
+    const typedNum = Number(el('exactTokenInput')?.value);
+    if (Number.isFinite(typedNum) && typedNum >= 16384 && Math.round(typedNum) !== curEff) {
+      return Math.round(typedNum);
+    }
+    if (curPref?.mode === 'dynamic') return 'dynamic';
+    if (!curPref || curPref.mode === 'default') return 'default';
+    return Number.isFinite(typedNum) && typedNum >= 16384 ? Math.round(typedNum) : Number(curPref.limitTokens || 256000);
+  };
+
   el('btnSaveOnly')?.addEventListener('click', async () => {
     const selProd = getProductByKey(state.selectedProductKey || state.activeProductKey);
-    const curPref = getPreferenceForProduct(selProd);
-    const rawVal = curPref?.mode === 'dynamic'
-      ? 'dynamic'
-      : (curPref?.mode === 'default' ? 'default' : Number(el('exactTokenInput')?.value || 256000));
+    const rawVal = resolveCurrentBudgetInputSelection(selProd);
     await saveAndApplyProductBudget(rawVal, selProd, { autoUnlockBinary: false });
   });
 
   el('btnApplyBudget')?.addEventListener('click', async () => {
     const selProd = getProductByKey(state.selectedProductKey || state.activeProductKey);
-    const curPref = getPreferenceForProduct(selProd);
-    const rawVal = curPref?.mode === 'dynamic'
-      ? 'dynamic'
-      : (curPref?.mode === 'default' ? 'default' : Number(el('exactTokenInput')?.value || 256000));
+    const rawVal = resolveCurrentBudgetInputSelection(selProd);
     await saveAndApplyProductBudget(rawVal, selProd, { autoUnlockBinary: true });
   });
 
@@ -7807,15 +8353,6 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     void checkReleaseUpdate({ silent: false, force: true });
   });
 
-  if (state.autoCheckUpdate !== false) {
-    const autoUpdateTimer = setTimeout(() => {
-      if (!state.disposed && state.autoCheckUpdate !== false) {
-        void checkReleaseUpdate({ silent: true, force: false });
-      }
-    }, 4500);
-    autoUpdateTimer?.unref?.();
-  }
-
   el('btnRunHotReload')?.addEventListener('click', async () => {
     const hotBtn = el('btnRunHotReload');
     if (hotBtn) hotBtn.disabled = true;
@@ -7995,6 +8532,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     setPanelLanguage: (lang) => {
       state.panelLang = normalizePulseLang(lang);
       applyStaticTranslations();
+      renderAll();
       return state.panelLang;
     },
     setModelBudgetForTest: async (modelOrProductKey, target, scope = 'per_model') => {
@@ -8040,6 +8578,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
       }
       controllers.clear();
       clearTimeout(toastTimer);
+      clearTimeout(autoUpdateTimer);
       uninstallRequestInterceptor();
       document.removeEventListener?.('click', onDocClick, true);
       document.removeEventListener?.('keydown', onDocKeydown);

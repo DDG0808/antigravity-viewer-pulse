@@ -43,6 +43,8 @@ def main():
     ap.add_argument("--cols", type=int, default=120)
     ap.add_argument("--wait", type=float, default=15.0, help="startup settle time")
     args = ap.parse_args()
+    if args.tabs < 1:
+        sys.exit("--tabs must be >= 1 to verify Tab selection cycling")
 
     env = dict(os.environ)
     env.setdefault("TERM", "xterm-256color")
@@ -66,9 +68,13 @@ def main():
     def screen():
         return ANSI.sub("", "".join(buf))
 
-    def chips():
-        found = CHIP.findall(screen())
-        return found[-1] if found else None
+    def chips_since(mark=0):
+        chunk = ANSI.sub("", "".join(buf[mark:]))
+        found = CHIP.findall(chunk)
+        if found:
+            return found[-1]
+        found_all = CHIP.findall(screen())
+        return found_all[-1] if found_all else None
 
     def menu_open():
         return "Keyboard:" in screen()
@@ -89,6 +95,7 @@ def main():
             print("hint: raise --wait, or run agy manually once to warm it up")
             return 1
 
+        menu_mark = len(buf)
         child.send("/model")
         drain(1.5)
         child.send("\r")
@@ -98,11 +105,12 @@ def main():
             return 1
         drain(1.0)
 
-        steps = [("open", chips())]
+        steps = [("open", chips_since(menu_mark))]
         for i in range(args.tabs):
+            step_mark = len(buf)
             child.send("\t")
             drain(1.2)
-            steps.append((f"tab x{i + 1}", chips()))
+            steps.append((f"tab x{i + 1}", chips_since(step_mark)))
     finally:
         try:
             child.send("\x1b"); drain(0.3); child.send("\x03"); drain(0.3)

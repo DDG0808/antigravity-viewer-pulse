@@ -14,8 +14,8 @@ const { PROJECT_VERSION } = require('./modules-config');
 
 test('1. Build pipeline generates valid meter-renderer.js with zero native ugly form controls', () => {
   const res = buildRenderer({ rootDir });
-  assert.equal(res.version, '0.9.0');
-  assert.equal(PROJECT_VERSION, '0.9.0');
+  assert.equal(res.version, '0.9.1');
+  assert.equal(PROJECT_VERSION, '0.9.1');
   assert.ok(fs.existsSync(res.targetFile), 'meter-renderer.js should exist');
   assert.ok(res.bytes > 40000, 'meter-renderer.js should contain complete bundled styles, template & logic');
 
@@ -137,6 +137,9 @@ test('2. Real Antigravity 2.32 payload regression: Quota snapshot+cascadeModelCo
       if (sel.startsWith('#') && sel.includes(' .')) {
         const cls = sel.split(' .')[1];
         return this.allNodes.filter(n => n.classList.contains(cls));
+      }
+      if (sel === '#detentBtns button') {
+        return this.allNodes.filter(n => n.tagName === 'BUTTON' && n.attributes.has('data-det'));
       }
       if (sel.startsWith('.dna-seg[data-seg="')) {
         const segVal = sel.match(/data-seg="([^"]+)"/)?.[1];
@@ -630,13 +633,13 @@ test('4. Online update system (DDG0808/antigravity-viewer-pulse), ZIP integrity 
   assert.equal(core.isValidExternalUrl(`${repoBase}/releases/tag/v0.9.0`), true);
 
   const manifestInfo = validateManifest();
-  assert.equal(manifestInfo.version, '0.9.0');
+  assert.equal(manifestInfo.version, '0.9.1');
   assert.ok(manifestInfo.liveRuntimeFiles.includes('scripts/macos-setup.js'));
   assert.ok(manifestInfo.liveRuntimeFiles.includes('meter-renderer.js'));
 
   const tmpZipDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pulse-zip-test-'));
   try {
-    const testZipPath = path.join(tmpZipDir, 'antigravity-viewer-pulse_0.9.0_darwin_arm64.zip');
+    const testZipPath = path.join(tmpZipDir, 'antigravity-viewer-pulse_0.9.1_darwin_arm64.zip');
     createZipArchive(testZipPath, [
       { src: path.join(rootDir, 'package.json'), arc: 'package.json' },
       { src: path.join(rootDir, 'install.sh'), arc: 'install.sh' }
@@ -646,8 +649,8 @@ test('4. Online update system (DDG0808/antigravity-viewer-pulse), ZIP integrity 
       execFileSync('unzip', ['-t', testZipPath], { stdio: 'pipe' });
     }
     const zipHash = crypto.createHash('sha256').update(fs.readFileSync(testZipPath)).digest('hex');
-    const checksumLine = `${zipHash}  antigravity-viewer-pulse_0.9.0_darwin_arm64.zip`;
-    assert.match(checksumLine, /^[0-9a-f]{64}\s+antigravity-viewer-pulse_0\.9\.0_darwin_arm64\.zip$/);
+    const checksumLine = `${zipHash}  antigravity-viewer-pulse_0.9.1_darwin_arm64.zip`;
+    assert.match(checksumLine, /^[0-9a-f]{64}\s+antigravity-viewer-pulse_0\.9\.1_darwin_arm64\.zip$/);
   } finally {
     fs.rmSync(tmpZipDir, { recursive: true, force: true });
   }
@@ -686,4 +689,486 @@ test('4. Online update system (DDG0808/antigravity-viewer-pulse), ZIP integrity 
   auditDir(rootDir);
   assert.ok(fs.existsSync(path.join(rootDir, 'assets/preview.png')), 'Missing assets/preview.png');
   assert.match(fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8'), /assets\/preview\.png/);
+});
+
+test('5. Security & host infrastructure regressions: zero remote-allow-origins=*, symlink/exec ASAR round-trip, macOS .app path resolution & user-space file locks', () => {
+  const { builtinAsar, findAsarPath } = require('./asar-engine');
+  const { acquireFileLock } = require('./modules-config');
+  const { withFileLockSync } = require('./meter-storage');
+
+  // Verify CSWSH RCE switch is completely absent across installer, CLI, and daemon launcher
+  for (const rel of ['modular-installer.js', 'cli.js', 'scripts/macos-setup.js']) {
+    const src = fs.readFileSync(path.join(rootDir, rel), 'utf8');
+    assert.doesNotMatch(src, /remote-allow-origins/i, `${rel} must never set remote-allow-origins`);
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pulse-sec-'));
+  const prevStateEnv = process.env.AG_METER_STATE_DIR;
+  try {
+    const customStateDir = path.join(tmpDir, 'state-root');
+    process.env.AG_METER_STATE_DIR = customStateDir;
+
+    // 1. Verify acquireFileLock writes into user-space state locks dir, NOT alongside read-only/watched target
+    const watchedTarget = path.join(tmpDir, 'watched-resources', 'app.asar');
+    fs.mkdirSync(path.dirname(watchedTarget), { recursive: true });
+    fs.writeFileSync(watchedTarget, 'dummy');
+    const lockHandle = acquireFileLock(watchedTarget, 2000);
+    try {
+      assert.equal(
+        fs.existsSync(`${watchedTarget}.lock`),
+        false,
+        'acquireFileLock must not create .lock inside watched/read-only target directory'
+      );
+      const lockDir = path.join(customStateDir, 'locks');
+      assert.ok(fs.existsSync(lockDir) && fs.readdirSync(lockDir).length === 1, 'Lock must live in stateDir/locks');
+    } finally {
+      lockHandle.release();
+    }
+
+    // 2. Verify meter-storage withFileLockSync does NOT steal active lock when process.kill throws EPERM
+    const storageTarget = path.join(tmpDir, 'ledger.json');
+    const storageLockFile = `${path.resolve(storageTarget)}.lock`;
+    fs.writeFileSync(storageLockFile, `${process.pid}:${Date.now()}`, 'utf8');
+    const origKill = process.kill;
+    process.kill = () => {
+      const err = new Error('Operation not permitted');
+      err.code = 'EPERM';
+      throw err;
+    };
+    try {
+      assert.throws(
+        () => withFileLockSync(storageTarget, () => {}, 35),
+        /获取文件写锁超时/,
+        'EPERM on live foreign PID must treat lock as active, never unlink it'
+      );
+      assert.equal(fs.existsSync(storageLockFile), true);
+    } finally {
+      process.kill = origKill;
+      fs.rmSync(storageLockFile, { force: true });
+    }
+
+    // 3. Verify findAsarPath resolves macOS .app bundle and rejects bare non-app directory
+    const fakeApp = path.join(tmpDir, 'Antigravity.app');
+    const fakeAsar = path.join(fakeApp, 'Contents', 'Resources', 'app.asar');
+    fs.mkdirSync(path.dirname(fakeAsar), { recursive: true });
+    fs.writeFileSync(fakeAsar, 'asar-bytes');
+    assert.equal(findAsarPath(fakeApp), fakeAsar);
+    const emptyDir = path.join(tmpDir, 'not-an-app');
+    fs.mkdirSync(emptyDir, { recursive: true });
+    assert.throws(() => findAsarPath(emptyDir), /Could not find app\.asar inside directory/);
+
+    // 4. Verify builtinAsar round-trips symlinks and executable permissions without Buffer.alloc(undefined) crash
+    if (process.platform !== 'win32') {
+      const srcPkg = path.join(tmpDir, 'pkg-src');
+      const binDir = path.join(srcPkg, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const runSh = path.join(binDir, 'run.sh');
+      fs.writeFileSync(runSh, '#!/bin/sh\necho ok\n', { mode: 0o755 });
+      fs.chmodSync(runSh, 0o755);
+      fs.symlinkSync('run.sh', path.join(binDir, 'run-link'));
+
+      const archiveOut = path.join(tmpDir, 'bundle.asar');
+      const extractOut = path.join(tmpDir, 'pkg-extracted');
+      builtinAsar.createPackageWithOptions(srcPkg, archiveOut, {});
+      builtinAsar.extractAll(archiveOut, extractOut);
+
+      const extractedLink = path.join(extractOut, 'bin', 'run-link');
+      const extractedRun = path.join(extractOut, 'bin', 'run.sh');
+      assert.equal(fs.lstatSync(extractedLink).isSymbolicLink(), true, 'Symlink must be preserved in ASAR');
+      assert.equal(fs.readlinkSync(extractedLink), 'run.sh');
+      assert.ok((fs.statSync(extractedRun).mode & 0o111) !== 0, 'Executable bit must be preserved in ASAR');
+    }
+  } finally {
+    if (prevStateEnv === undefined) delete process.env.AG_METER_STATE_DIR;
+    else process.env.AG_METER_STATE_DIR = prevStateEnv;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('6. Collector, attachment XML/ZIP-bomb defense & core ledger/quota/FX regressions', async () => {
+  const { execFileSync } = require('node:child_process');
+  const zipfileCode = [
+    'import json, os, sys, tempfile, zipfile',
+    'd = tempfile.mkdtemp()',
+    'docx_bomb = os.path.join(d, "xxe.docx")',
+    'with zipfile.ZipFile(docx_bomb, "w") as z:',
+    '    z.writestr("word/document.xml", \'<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY lol "boom">]><w:document><w:t>hello</w:t></w:document>\')',
+    'print(docx_bomb)'
+  ].join('\n');
+
+  const core = require('./meter-core');
+  const { collect } = require('./meter-collector');
+
+  // 1. Sub-second Protobuf Duration (<1s with omitted seconds: 0) & streamingTps vs end-to-end tps
+  assert.equal(core.parseDurationSec({ nanos: 180000000 }), 0.18);
+  assert.equal(core.parseDurationSec({ seconds: '1', nanos: 250000000 }), 1.25);
+
+  const callParsed = core.parseGeneratorCall({
+    stepIndices: [1],
+    chatModel: {
+      model: 'MODEL_GEMINI_3_1_PRO',
+      modelDisplayName: 'Gemini 3.1 Pro',
+      timeToFirstToken: { nanos: 200000000 },
+      streamingDuration: { seconds: 1, nanos: 800000000 },
+      usage: { inputTokens: 4000, cacheReadTokens: 16000, outputTokens: 200 }
+    }
+  }, 'conv-1', 'desktop');
+  assert.equal(callParsed.ttftSec, 0.2);
+  assert.equal(callParsed.streamingSec, 1.8);
+  assert.equal(callParsed.durationSec, 2.0);
+  assert.equal(callParsed.tps, 100, 'End-to-end tps = 200 / (0.2 + 1.8) = 100');
+  assert.ok(Math.abs(callParsed.streamingTps - (200 / 1.8)) < 0.2, 'streamingTps must reflect pure streaming phase rate');
+
+  const emptyOutputCall = core.parseGeneratorCall({
+    stepIndices: [2],
+    chatModel: {
+      model: 'MODEL_GEMINI_3_1_PRO',
+      timeToFirstToken: '0.5s',
+      streamingDuration: '0.4s',
+      usage: { inputTokens: 1000, outputTokens: 0 }
+    }
+  }, 'conv-1', 'desktop');
+  assert.notEqual(emptyOutputCall.status, 'final', '0-output turn without finish signal must not be marked final');
+
+  // 2. Summarize explicit zero cacheReadTokens on Turn 2 vs missing usage
+  const prevSummary = core.summarize({
+    chatModel: {
+      model: 'MODEL_GEMINI_3_1_PRO',
+      usage: { inputTokens: 10000, cacheReadTokens: 50000, outputTokens: 500 },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+    }
+  });
+  assert.equal(prevSummary.cached, 50000);
+  const turn2ZeroCache = core.summarize({
+    chatModel: {
+      model: 'MODEL_GEMINI_3_1_PRO',
+      usage: { inputTokens: 62000, cacheReadTokens: 0, outputTokens: 300 },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+    }
+  }, { previousValidContext: prevSummary });
+  assert.equal(turn2ZeroCache.cached, 0, 'Explicit 0 cacheReadTokens must never inherit previous turn cached tokens');
+
+  // 3. Cache write surcharge & net cache savings
+  const writeHeavyCost = core.calculateRequestApiCost({
+    model: 'claude-opus-5-5',
+    inputTokens: 10000,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 100000,
+    outputTokens: 1000
+  });
+  const plainCost = core.calculateRequestApiCost({
+    model: 'claude-opus-5-5',
+    inputTokens: 110000,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 1000
+  });
+  assert.ok(writeHeavyCost.costUSD > plainCost.costUSD, 'Cache write surcharge must exceed plain input cost on cold write');
+  const netSavedOnColdWrite = core.calculateNetCacheSavedUSD({
+    model: 'claude-opus-5-5',
+    inputTokens: 10000,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 100000,
+    outputTokens: 1000
+  });
+  assert.ok(netSavedOnColdWrite < 0, 'Cold cache write with zero cache reads has negative net savings');
+
+  // 4. Region search collision fix ("China" -> CN, "United Kingdom" -> GB, never hijacked by "in" -> India)
+  assert.equal(core.findRegionPreset('China')?.id, 'CN');
+  assert.equal(core.findRegionPreset('United Kingdom')?.id, 'GB');
+  assert.equal(core.findRegionPreset('India')?.id, 'IN');
+
+  // 5. Epoch-zero quota resetTime exclusion & 168_hours bucket merging
+  const parsedEpochZero = core.parseQuotaFraction({ resetTime: '1970-01-01T00:00:00Z' }, { schemaKind: 'codeium_quota_info' });
+  assert.equal(parsedEpochZero.isExhausted, false, '1970 epoch zero timestamp must not trigger proto3 zero exhaustion');
+  assert.equal(core.formatQuotaResetMeta('1970-01-01T00:00:00Z').hasResetTime, false, '1970 epoch zero must have hasResetTime=false');
+  const multiWinSnap = core.buildModelQuotaSnapshot({
+    quotaSummaryRes: {
+      groups: [
+        { groupId: 'gemini_hydrogen_a', displayName: 'Gemini Hydrogen', buckets: [{ bucketId: 'b5h', window: '5_hours', remainingFraction: 0.8 }] },
+        { groupId: 'gemini_hydrogen_b', displayName: 'Gemini Hydrogen', buckets: [{ bucketId: 'b168h', window: '168_hours', remainingFraction: 0.6 }] }
+      ]
+    },
+    cascadeModelConfigs: [{ modelId: 'MODEL_GEMINI_4_HYDROGEN', label: 'Gemini 4 Hydrogen' }]
+  });
+  assert.ok(multiWinSnap.pools[0].buckets.some(b => b.windowKey === 'weekly'), '168_hours must map to weekly windowKey');
+  assert.ok(multiWinSnap.pools[0].buckets.some(b => b.windowKey === '5h'), '5_hours must map to 5h windowKey');
+
+  // 6. Collector collect() end-to-end without ReferenceError: cachedHostUserStatus is not defined
+  const collectorSrc = fs.readFileSync(path.join(rootDir, 'meter-collector.js'), 'utf8');
+  assert.doesNotMatch(collectorSrc, /\bcachedHostUserStatus\b/, 'meter-collector.js must not reference undeclared cachedHostUserStatus');
+  const https = require('node:https');
+  const { EventEmitter } = require('node:events');
+  const origHttpsRequest = https.request;
+  const convId = '11111111-2222-3333-4444-555555555555';
+  https.request = (arg1, arg2, arg3) => {
+    const cb = typeof arg2 === 'function' ? arg2 : arg3;
+    const reqPath = typeof arg1 === 'string'
+      ? arg1
+      : (arg1 instanceof URL ? arg1.pathname : String(arg1?.path || arg2?.path || '/'));
+    const reqEmitter = new EventEmitter();
+    reqEmitter.write = () => {};
+    reqEmitter.destroy = () => {};
+    reqEmitter.setTimeout = () => {};
+    reqEmitter.end = () => {
+      const resEmitter = new EventEmitter();
+      resEmitter.statusCode = 200;
+      resEmitter.setEncoding = () => {};
+      let payloadStr = '<html><script>window.__APP_CONFIG__ = {"csrfToken":"mock-csrf"};</script></html>';
+      if (reqPath.includes('GetCascadeTrajectoryGeneratorMetadata')) {
+        payloadStr = JSON.stringify({ generatorMetadata: [] });
+      } else if (reqPath.includes('GetCascadeTrajectory')) {
+        payloadStr = JSON.stringify({
+          numTotalSteps: 1,
+          trajectory: { steps: [{ userInput: { items: [{ text: 'hello world' }] } }] }
+        });
+      }
+      process.nextTick(() => {
+        if (typeof cb === 'function') cb(resEmitter);
+        resEmitter.emit('data', Buffer.from(payloadStr, 'utf8'));
+        resEmitter.emit('end');
+      });
+    };
+    return reqEmitter;
+  };
+  try {
+    const collected = await collect('https://127.0.0.1:49999', convId, { force: true });
+    assert.equal(collected.conversation, convId);
+    assert.ok(collected.session && collected.session.steps === 1, 'collect() must return session breakdown without ReferenceError');
+  } finally {
+    https.request = origHttpsRequest;
+  }
+
+  // 7. Attachment scanner <!ENTITY XML bomb defense
+  const pyBin = process.platform === 'win32' ? 'python' : 'python3';
+  try {
+    const bombPath = execFileSync(pyBin, ['-c', zipfileCode], { encoding: 'utf8' }).trim();
+    try {
+      const scanOut = execFileSync(pyBin, [path.join(rootDir, 'attachment_scan.py')], {
+        input: JSON.stringify([{ key: 'bomb-1', path: bombPath, mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }]),
+        encoding: 'utf8'
+      });
+      const parsedOut = JSON.parse(scanOut);
+      const item = Array.isArray(parsedOut) ? parsedOut[0] : parsedOut.results?.[0];
+      assert.equal(item?.status, 'unknown', 'DOCTYPE ENTITY XML bomb must be blocked by _safe_zip_xml_bytes');
+    } finally {
+      fs.rmSync(path.dirname(bombPath), { recursive: true, force: true });
+    }
+  } catch (e) {
+    if (e?.code !== 'ENOENT') throw e;
+  }
+});
+
+test('7. Binary enhance & context-unlock coexistence: CHINESE_TITLE_META.mixed and surgical gate restore', () => {
+  const enhance = require('./meter-enhance');
+  assert.ok(enhance.CHINESE_TITLE_META.mixed, 'CHINESE_TITLE_META must define mixed state so partial rule match never crashes');
+  assert.equal(enhance.CHINESE_TITLE_META.mixed.mode, 'mixed');
+});
+
+test('8. HUD renderer regressions: external origin block, unsupported platform unlock guard, fixed 256K vs default, decorator+fetch dedup & EN/zh-TW i18n', async () => {
+  class MiniClassList {
+    constructor() { this.set = new Set(); }
+    syncFromAttr(s) { this.set = new Set(String(s || '').split(/\s+/).filter(Boolean)); }
+    add(...n) { n.forEach(x => this.set.add(x)); }
+    remove(...n) { n.forEach(x => this.set.delete(x)); }
+    toggle(n, f) { const v = f !== undefined ? Boolean(f) : !this.set.has(n); if (v) this.set.add(n); else this.set.delete(n); return v; }
+    contains(n) { return this.set.has(n); }
+  }
+  class MiniEl {
+    constructor(tag = 'div') {
+      this.tagName = tag.toUpperCase();
+      this.id = '';
+      this.dataset = {};
+      this.attributes = new Map();
+      this.style = { setProperty(k, v) { this[k] = v; }, getPropertyValue(k) { return this[k] || ''; } };
+      this.classList = new MiniClassList();
+      this.children = [];
+      this.parentNode = null;
+      this.listeners = new Map();
+      this.textContent = '';
+      this._innerHTML = '';
+      this.hidden = false;
+      this.value = '';
+    }
+    setAttribute(k, v) {
+      this.attributes.set(k, String(v));
+      if (k === 'id') this.id = String(v);
+      if (k === 'class') this.classList.syncFromAttr(v);
+      if (k.startsWith('data-')) {
+        const camel = k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        this.dataset[camel] = String(v);
+      }
+    }
+    getAttribute(k) { return this.attributes.get(k) ?? null; }
+    appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+    insertBefore(c) { c.parentNode = this; this.children.push(c); return c; }
+    get firstChild() { return this.children[0] || null; }
+    get lastElementChild() { return this.children[this.children.length - 1] || null; }
+    get isConnected() { return Boolean(this.parentNode); }
+    contains(o) { return o === this; }
+    remove() {}
+    addEventListener(t, fn) { if (!this.listeners.has(t)) this.listeners.set(t, []); this.listeners.get(t).push(fn); }
+    removeEventListener() {}
+    getBoundingClientRect() { return { top: 6, bottom: 36, left: 900, right: 1180, width: 268, height: 30 }; }
+    getContext() {
+      return {
+        save() {}, restore() {}, setTransform() {}, scale() {}, clearRect() {}, beginPath() {}, moveTo() {},
+        quadraticCurveTo() {}, lineTo() {}, stroke() {}, closePath() {}, fill() {}, arc() {},
+        setLineDash() {}, createLinearGradient() { return { addColorStop() {} }; }
+      };
+    }
+    attachShadow() {
+      const sr = new MiniEl('shadow-root');
+      sr.byId = new Map();
+      sr.allNodes = [];
+      Object.defineProperty(sr, 'innerHTML', {
+        get() { return this._innerHTML; },
+        set(html) {
+          this._innerHTML = String(html);
+          this.byId.clear();
+          this.allNodes = [];
+          const tagRe = /<([a-zA-Z0-9-]+)([^>]*)>/g;
+          let m;
+          while ((m = tagRe.exec(this._innerHTML))) {
+            const node = new MiniEl(m[1]);
+            const attrRe = /([a-zA-Z0-9_-]+)=["']([^"']*)["']/g;
+            let am;
+            while ((am = attrRe.exec(m[2] || ''))) node.setAttribute(am[1], am[2]);
+            if (node.id) this.byId.set(node.id, node);
+            this.allNodes.push(node);
+          }
+        }
+      });
+      sr.getElementById = (id) => sr.byId.get(id) || null;
+      sr.querySelectorAll = (sel) => {
+        if (sel === '[data-i18n]') return sr.allNodes.filter(n => n.attributes.has('data-i18n'));
+        if (sel === '#detentBtns button') return sr.allNodes.filter(n => n.attributes.has('data-det'));
+        if (sel.startsWith('#') && sel.includes(' .')) {
+          const cls = sel.split(' .')[1];
+          return sr.allNodes.filter(n => n.classList.contains(cls));
+        }
+        if (sel.startsWith('.')) return sr.allNodes.filter(n => n.classList.contains(sel.slice(1)));
+        if (sel.startsWith('[') && sel.endsWith(']')) return sr.allNodes.filter(n => n.attributes.has(sel.slice(1, -1)));
+        return [];
+      };
+      sr.querySelector = (sel) => sr.querySelectorAll(sel)[0] || null;
+      this.shadowRoot = sr;
+      return sr;
+    }
+    querySelector() { return null; }
+    querySelectorAll() { return []; }
+  }
+
+  const coreCode = fs.readFileSync(path.join(rootDir, 'meter-core.js'), 'utf8');
+  const rendererCode = fs.readFileSync(path.join(rootDir, 'meter-renderer.js'), 'utf8');
+
+  // Part A: External untrusted origin must refuse to mount HUD
+  const extBody = new MiniEl('body');
+  const extSandbox = {
+    console, setTimeout, clearTimeout, setInterval, clearInterval,
+    location: { origin: 'https://evil.example.com', pathname: '/' },
+    document: { body: extBody, documentElement: extBody, createElement: (t) => new MiniEl(t), getElementById: () => null }
+  };
+  extSandbox.window = extSandbox;
+  extSandbox.globalThis = extSandbox;
+  vm.createContext(extSandbox);
+  vm.runInContext(rendererCode, extSandbox, { filename: 'meter-renderer.js' });
+  assert.equal(extSandbox.__AGContextMeter, undefined, 'External non-loopback origin must never mount __AGContextMeter');
+
+  // Part B: macOS unsupported binary unlock + fixed 256K vs default + decorator/fetch dedup + i18n
+  const localBody = new MiniEl('body');
+  const trigger = new MiniEl('button');
+  trigger.textContent = 'Gemini 3.1 Pro';
+  let macUnlockCalls = 0;
+  let fetchCapturedBodies = [];
+
+  const sb = {
+    console, setTimeout, clearTimeout, setInterval, clearInterval,
+    AbortController, TextEncoder, TextDecoder, Uint8Array, DataView, ArrayBuffer,
+    innerWidth: 1280,
+    __APP_CONFIG__: { csrfToken: 'csrf' },
+    location: { origin: 'http://127.0.0.1:4100', pathname: '/c/12345678-1234-1234-1234-123456789abc' },
+    getComputedStyle: () => ({ getPropertyValue: () => '#10b981' }),
+    fetch: async (url, init) => {
+      if (String(url).includes('SendUserCascadeMessage')) {
+        fetchCapturedBodies.push(init?.body);
+      }
+      return { ok: true, status: 200, json: async () => ({ generatorMetadata: [] }) };
+    },
+    contextMeterAPI: {
+      getSettings: async () => ({ ok: true, autoCheckUpdate: false, uiPreferences: { autoCheckUpdate: false }, contextScopeMode: 'per_model' }),
+      saveSettings: async () => ({ ok: true }),
+      getQuota: async () => ({ ok: true, data: { snapshot: { pools: [] }, cascadeModelConfigs: [{ modelId: 'MODEL_GEMINI_3_1_PRO', label: 'Gemini 3.1 Pro', maxTokens: 1048576, maxOutputTokens: 65536 }] } }),
+      getTokenHistory: async () => ({ ok: true, data: { daily: {}, speedRecords: [] } }),
+      getContextUnlockStatus: async () => ({ ok: true, data: { status: 'unsupported', isPlatformSupported: false } }),
+      applyContextUnlock: async () => { macUnlockCalls++; return { ok: false }; },
+      getEnhanceStatus: async () => ({ ok: true, data: {} }),
+      getModulesStatus: async () => ({ ok: true, data: { modules: {} } }),
+      getRuntimeInfo: async () => ({ ok: true, backendSource: 'electron-ipc', backendVersion: '0.9.0' }),
+      scan: async () => ({ ok: true, data: { session: { files: [] } } })
+    },
+    document: {
+      hidden: false,
+      body: localBody,
+      documentElement: localBody,
+      createElement: (t) => new MiniEl(t),
+      getElementById: () => null,
+      querySelector: () => null,
+      querySelectorAll: (s) => (s.includes('model-selector-trigger') ? [trigger] : []),
+      addEventListener() {},
+      removeEventListener() {}
+    },
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  sb.window = sb;
+  sb.globalThis = sb;
+  vm.createContext(sb);
+  vm.runInContext(coreCode, sb, { filename: 'meter-core.js' });
+  vm.runInContext(rendererCode, sb, { filename: 'meter-renderer.js' });
+  await new Promise(r => setTimeout(r, 80));
+
+  const api = sb.__AGContextMeter;
+  try {
+    const hostEl = localBody.children.find(n => n.id === 'ag-context-meter');
+    const sr = hostEl.shadowRoot;
+
+    // 1. Unsupported platform must NOT call applyContextUnlock on >256K budget
+    await api.setModelBudgetForTest('Gemini 3.1 Pro', 512000, 'per_model');
+    assert.equal(macUnlockCalls, 0, 'macOS unsupported binary unlock platform must not invoke applyContextUnlock');
+    assert.equal(sr.getElementById('btnRestoreBin')?.hidden, true, 'Restore binary button must hide on unsupported platform');
+
+    // 2. Numeric 256000 must inject maxTokenLimit=256000 (fixed), whereas 'default' strips maxTokenLimit
+    await api.setModelBudgetForTest('Gemini 3.1 Pro', 256000, 'per_model');
+    const reqFixed256 = { cascadeId: '12345678-1234-1234-1234-123456789abc', items: [{ text: 'test 256k' }] };
+    sb.__AG_METER_ON_SEND_MESSAGE__(reqFixed256, 'client_object');
+    assert.equal(reqFixed256.cascadeConfig?.checkpointConfig?.maxTokenLimit, 256000, 'Numeric 256000 must be saved as fixed 256000 and injected');
+
+    // Immediate fetch of the already-mutated payload within 450ms must pass through without double-rewrite
+    const wireJson = JSON.stringify(reqFixed256);
+    await sb.fetch('/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: wireJson
+    });
+    assert.equal(fetchCapturedBodies[0], wireJson, 'Transport send immediately following decorator hook must be deduplicated');
+
+    await api.setModelBudgetForTest('Gemini 3.1 Pro', 'default', 'per_model');
+    const reqDefault = {
+      cascadeId: '12345678-1234-1234-1234-123456789abc',
+      cascadeConfig: { checkpointConfig: { maxTokenLimit: 512000 } },
+      items: [{ text: 'reset to default' }]
+    };
+    sb.__AG_METER_ON_SEND_MESSAGE__(reqDefault, 'client_object');
+    assert.equal(reqDefault.cascadeConfig?.checkpointConfig?.maxTokenLimit, undefined, 'Default mode must strip custom maxTokenLimit');
+
+    // 3. Language switch updates both static [data-i18n] and dynamic text
+    api.setPanelLanguage('en');
+    assert.equal(sr.getElementById('binaryUnlockBadge')?.textContent, 'Request Injection Ready');
+    assert.equal(sr.getElementById('tpsDeltaTag')?.textContent, 'Waiting');
+    api.setPanelLanguage('zh-TW');
+    assert.equal(sr.getElementById('binaryUnlockBadge')?.textContent, '請求級注入就緒');
+  } finally {
+    api.dispose();
+  }
 });

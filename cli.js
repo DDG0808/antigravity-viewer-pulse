@@ -140,8 +140,7 @@ async function relaunchAntigravityWithCdp(options = {}) {
       appBundle,
       '--args',
       `--remote-debugging-address=${LOOPBACK_IPV4}`,
-      `--remote-debugging-port=${debugPort}`,
-      '--remote-allow-origins=*'
+      `--remote-debugging-port=${debugPort}`
     ], { encoding: 'utf8' });
     if (openRes.status !== 0) {
       throw new Error(`启动 ${appBundle} 失败: ${String(openRes.stderr || '').trim() || 'open 命令返回非零状态'}`);
@@ -153,13 +152,13 @@ async function relaunchAntigravityWithCdp(options = {}) {
     }
     console.log(`🔄 正在以本地调试端口 (${debugPort}) 重新启动 Antigravity...`);
     try {
-      spawnSync('taskkill', ['/IM', 'Antigravity.exe', '/F'], { timeout: 3500, stdio: 'ignore', windowsHide: true });
+      // 排除当前 CLI 进程自身，防止 ELECTRON_RUN_AS_NODE 借用 Antigravity.exe 运行时自杀
+      spawnSync('taskkill', ['/FI', `PID ne ${process.pid}`, '/IM', 'Antigravity.exe', '/F'], { timeout: 3500, stdio: 'ignore', windowsHide: true });
     } catch {}
     await new Promise(r => setTimeout(r, 600));
     const child = spawn(exePath, [
       `--remote-debugging-address=${LOOPBACK_IPV4}`,
-      `--remote-debugging-port=${debugPort}`,
-      '--remote-allow-origins=*'
+      `--remote-debugging-port=${debugPort}`
     ], { detached: true, stdio: 'ignore', windowsHide: true });
     child.unref();
   } else {
@@ -200,8 +199,11 @@ function formatLiveFailureDiagnostic(report, liveBefore) {
   }
 
   if (reason === 'no_page_targets') {
-    const targetsDesc = Array.isArray(report?.allTargetsSummary) && report.allTargetsSummary.length
-      ? report.allTargetsSummary.map(t => `${t.type}:${t.url}`).join(' | ')
+    const rawTargets = Array.isArray(report?.allTargetsSummary) && report.allTargetsSummary.length
+      ? report.allTargetsSummary
+      : (Array.isArray(liveBefore?.allTargetsSummary) ? liveBefore.allTargetsSummary : []);
+    const targetsDesc = rawTargets.length
+      ? rawTargets.map(t => typeof t === 'string' ? t : `${t?.type || 'unknown'}:${t?.url || ''}`).join(' | ')
       : '无页面目标';
     return (
       `已连接 CDP 端口 ${report?.cdpPort || liveBefore?.cdpPort || '未知'}，但未找到已打开的 Antigravity 主会话窗口（当前目标: ${targetsDesc}）。\n` +

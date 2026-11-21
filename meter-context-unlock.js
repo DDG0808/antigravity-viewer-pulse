@@ -598,16 +598,21 @@ function checkGate3B(buf, textVA, textOff, symExp, symSelect, arch) {
   }
 
   if (arch === 'arm64') {
+    const armHits = [];
     for (let rel = 4; rel < body.length - 16; rel += 4) {
+      const wPrev = body.readUInt32LE(rel - 4);
       const w0 = body.readUInt32LE(rel);
       const w1 = body.readUInt32LE(rel + 4);
       if ((w0 & 0xff00001f) === 0xb4000000 && w1 === 0xb9000c1f) {
-        return { status: 'patched', offset: fnOff + rel, length: 24 };
+        armHits.push({ status: 'patched', offset: fnOff + rel, length: 24 });
+        continue;
       }
-      if ((w0 & 0xff00001f) === 0xb4000001) { // cbz x1, ...
-        return { status: 'unpatched', offset: fnOff + rel, length: 24 };
+      // 要求前一条指令为 bl 调用，避免误匹配函数体中无关的 cbz x1
+      if ((wPrev & 0xfc000000) === 0x94000000 && (w0 & 0xff00001f) === 0xb4000001) {
+        armHits.push({ status: 'unpatched', offset: fnOff + rel, length: 24 });
       }
     }
+    if (armHits.length === 1) return armHits[0];
     return { status: 'unknown' };
   }
 
@@ -2141,7 +2146,39 @@ function restoreUnlock(options = {}) {
     }
 
     const backupBuf = fs.readFileSync(manifest.backupPath);
-    const writeRes = atomicWriteBinary(target, backupBuf, 'res');
+    let targetBufToWrite = backupBuf;
+    // 若二进制同时叠加了提示词精简或中文标题补丁，仅定点还原上下文门禁字节以保留增强补丁
+    if (manifest.patchedSha256 && currentSha256 !== manifest.patchedSha256 && backupBuf.length === currentBuf.length) {
+      const curAnalysis = analyzeBinary(target, { backupDir: options.backupDir });
+      if (curAnalysis.status === 'not_patched') {
+        manifest.needsRestart = false;
+        manifest.configuredMode = 'default';
+        manifest.configuredLimitTokens = DEFAULT_CHECKPOINT_TOKENS;
+        saveManifest(manifest, options.backupDir);
+        const syncedConfigs = syncExternalContextConfigs('default', null, options);
+        return { ok: true, alreadyRestored: true, syncedConfigs, message: '当前上下文门禁已处于官方原版，无需重复恢复。' };
+      }
+      if (
+        (curAnalysis.gate3a?.status === 'patched' || curAnalysis.gate3a?.status === 'unpatched') &&
+        (curAnalysis.gate3b?.status === 'patched' || curAnalysis.gate3b?.status === 'unpatched')
+      ) {
+        const merged = Buffer.from(currentBuf);
+        if (curAnalysis.gate3a.offset !== null) {
+          backupBuf.copy(merged, curAnalysis.gate3a.offset, curAnalysis.gate3a.offset, curAnalysis.gate3a.offset + CLAMP_256K_X64.length);
+        }
+        if (curAnalysis.gate3a.hasDefaultSite && curAnalysis.gate3a.defaultOffset !== null) {
+          backupBuf.copy(merged, curAnalysis.gate3a.defaultOffset, curAnalysis.gate3a.defaultOffset, curAnalysis.gate3a.defaultOffset + DEF_ORIG_X64.length);
+        }
+        if (curAnalysis.gate3b.offset !== null && curAnalysis.gate3b.length > 0) {
+          backupBuf.copy(merged, curAnalysis.gate3b.offset, curAnalysis.gate3b.offset, curAnalysis.gate3b.offset + curAnalysis.gate3b.length);
+        }
+        if (curAnalysis.serializerGate?.present && curAnalysis.serializerGate.offset !== null) {
+          backupBuf.copy(merged, curAnalysis.serializerGate.offset, curAnalysis.serializerGate.offset, curAnalysis.serializerGate.offset + SERIALIZER_STOCK_X64.length);
+        }
+        targetBufToWrite = merged;
+      }
+    }
+    const writeRes = atomicWriteBinary(target, targetBufToWrite, 'res');
     if (!writeRes.ok) {
       return { ok: false, error: `恢复原版写入失败: ${writeRes.error}` };
     }
@@ -2565,7 +2602,45 @@ async function restoreUnlockAsync(options = {}) {
         return { ok: true, alreadyRestored: true, message: '当前已经是官方原版，无需重复恢复。' };
       }
 
-      const writeRes = await atomicWriteBinaryAsync(target, backupBuf, 'res');
+      let targetBufToWrite = backupBuf;
+      // 若二进制同时叠加了提示词精简或中文标题补丁，仅定点还原上下文门禁字节以保留增强补丁
+      if (manifest.patchedSha256 && currentSha256 !== manifest.patchedSha256 && backupBuf.length === currentBuf.length) {
+        const curAnalysis = await analyzeBinaryAsync(target, {
+          backupDir: options.backupDir,
+          preloadedBuf: currentBuf,
+          forceRefresh: true,
+          skipProcessCheck: true
+        });
+        if (curAnalysis.status === 'not_patched') {
+          manifest.needsRestart = false;
+          manifest.configuredMode = 'default';
+          manifest.configuredLimitTokens = DEFAULT_CHECKPOINT_TOKENS;
+          saveManifest(manifest, options.backupDir);
+          const syncedConfigs = syncExternalContextConfigs('default', null, options);
+          return { ok: true, alreadyRestored: true, syncedConfigs, message: '当前上下文门禁已处于官方原版，无需重复恢复。' };
+        }
+        if (
+          (curAnalysis.gate3a?.status === 'patched' || curAnalysis.gate3a?.status === 'unpatched') &&
+          (curAnalysis.gate3b?.status === 'patched' || curAnalysis.gate3b?.status === 'unpatched')
+        ) {
+          const merged = Buffer.from(currentBuf);
+          if (curAnalysis.gate3a.offset !== null) {
+            backupBuf.copy(merged, curAnalysis.gate3a.offset, curAnalysis.gate3a.offset, curAnalysis.gate3a.offset + CLAMP_256K_X64.length);
+          }
+          if (curAnalysis.gate3a.hasDefaultSite && curAnalysis.gate3a.defaultOffset !== null) {
+            backupBuf.copy(merged, curAnalysis.gate3a.defaultOffset, curAnalysis.gate3a.defaultOffset, curAnalysis.gate3a.defaultOffset + DEF_ORIG_X64.length);
+          }
+          if (curAnalysis.gate3b.offset !== null && curAnalysis.gate3b.length > 0) {
+            backupBuf.copy(merged, curAnalysis.gate3b.offset, curAnalysis.gate3b.offset, curAnalysis.gate3b.offset + curAnalysis.gate3b.length);
+          }
+          if (curAnalysis.serializerGate?.present && curAnalysis.serializerGate.offset !== null) {
+            backupBuf.copy(merged, curAnalysis.serializerGate.offset, curAnalysis.serializerGate.offset, curAnalysis.serializerGate.offset + SERIALIZER_STOCK_X64.length);
+          }
+          targetBufToWrite = merged;
+        }
+      }
+
+      const writeRes = await atomicWriteBinaryAsync(target, targetBufToWrite, 'res');
       if (!writeRes.ok) {
         return { ok: false, error: `恢复原版写入失败: ${writeRes.error}` };
       }

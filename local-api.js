@@ -409,7 +409,10 @@ function openCdpSession(wsUrl, timeoutMs = 4500, wsOptions = {}) {
       close() {
         if (closed) return;
         closed = true;
+        rxBuf = Buffer.alloc(0);
+        fragments = [];
         failAllPending(new Error('CDP session closed locally'));
+        socket.removeAllListeners('data');
         if (!socket.destroyed) {
           try {
             socket.write(encodeClientWsFrame(0x08, Buffer.alloc(0)));
@@ -421,6 +424,9 @@ function openCdpSession(wsUrl, timeoutMs = 4500, wsOptions = {}) {
         }
       }
     });
+
+    const MAX_WS_PAYLOAD_BYTES = 32 * 1024 * 1024;
+    let fragmentsBytes = 0;
 
     const parseWsFrames = () => {
       while (rxBuf.length >= 2) {
@@ -440,6 +446,15 @@ function openCdpSession(wsUrl, timeoutMs = 4500, wsOptions = {}) {
           if (rxBuf.length < 10) return;
           payloadLen = Number(rxBuf.readBigUInt64BE(2));
           offset = 10;
+        }
+
+        if (!Number.isSafeInteger(payloadLen) || payloadLen < 0 || payloadLen > MAX_WS_PAYLOAD_BYTES) {
+          closed = true;
+          rxBuf = Buffer.alloc(0);
+          fragments = [];
+          try { socket.destroy(); } catch {}
+          failAllPending(new Error('CDP WebSocket frame exceeds maximum safe size'));
+          return;
         }
 
         const maskOffset = offset;
@@ -471,10 +486,20 @@ function openCdpSession(wsUrl, timeoutMs = 4500, wsOptions = {}) {
           continue;
         }
         if (opcode === 0x01 || opcode === 0x00) {
+          fragmentsBytes += framePayload.length;
+          if (fragmentsBytes > MAX_WS_PAYLOAD_BYTES) {
+            closed = true;
+            fragments = [];
+            fragmentsBytes = 0;
+            try { socket.destroy(); } catch {}
+            failAllPending(new Error('CDP WebSocket reassembled message exceeds maximum safe size'));
+            return;
+          }
           fragments.push(framePayload);
           if (fin) {
             const fullText = Buffer.concat(fragments).toString('utf8');
             fragments = [];
+            fragmentsBytes = 0;
             try {
               const msg = JSON.parse(fullText);
               if (msg && msg.id !== undefined && pending.has(msg.id)) {

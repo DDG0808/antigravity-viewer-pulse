@@ -718,8 +718,31 @@ async function install(options = {}) {
         meterVersion: pkgVersion,
         version,
         installed,
-        installerDir: __dirname,
-        cliPath: path.join(__dirname, 'cli.js'),
+        installerDir: (() => {
+          const envDir = process.env.AG_PRESERVE_INSTALLER_DIR ? path.resolve(process.env.AG_PRESERVE_INSTALLER_DIR) : null;
+          if (envDir && fs.existsSync(envDir)) return envDir;
+          const tmpRoot = path.resolve(os.tmpdir());
+          const curDir = path.resolve(__dirname);
+          // 在线热更新在临时解压目录执行时，避免将即将删除的 tmp 目录写入持久化安装记录
+          if (curDir.startsWith(tmpRoot)) {
+            if (previousManifest?.installerDir && !path.resolve(previousManifest.installerDir).startsWith(tmpRoot) && fs.existsSync(previousManifest.installerDir)) {
+              return previousManifest.installerDir;
+            }
+            return path.join(stateDir, 'live-runtime');
+          }
+          return __dirname;
+        })(),
+        cliPath: (() => {
+          const tmpRoot = path.resolve(os.tmpdir());
+          const curDir = path.resolve(__dirname);
+          if (curDir.startsWith(tmpRoot)) {
+            if (previousManifest?.cliPath && !path.resolve(previousManifest.cliPath).startsWith(tmpRoot) && fs.existsSync(previousManifest.cliPath)) {
+              return previousManifest.cliPath;
+            }
+            return path.join(stateDir, 'live-runtime', 'cli.js');
+          }
+          return path.join(__dirname, 'cli.js');
+        })(),
         backup,
         previousInstalledBackup,
         previousInstalledSha256,
@@ -823,6 +846,42 @@ async function install(options = {}) {
         manifest.verifiedAt = new Date().toISOString();
 
         fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+        // 清理 macOS 应用隔离标记并轮转淘汰历史快照，防止备份目录随客户端升级无限膨胀
+        if (process.platform === 'darwin') {
+          try {
+            const { spawnSync } = require('child_process');
+            spawnSync('xattr', ['-d', 'com.apple.quarantine', installed], { stdio: 'ignore' });
+          } catch { }
+        }
+        try {
+          if (fs.existsSync(snapshotDir)) {
+            const snaps = fs.readdirSync(snapshotDir)
+              .filter(f => f.endsWith('.asar'))
+              .map(f => {
+                const p = path.join(snapshotDir, f);
+                return { p, mtime: fs.statSync(p).mtimeMs };
+              })
+              .sort((a, b) => b.mtime - a.mtime);
+            for (const old of snaps.slice(2)) {
+              try { fs.unlinkSync(old.p); } catch { }
+            }
+          }
+          if (fs.existsSync(backupDir)) {
+            const keepSet = new Set([path.resolve(backup), path.resolve(previousInstalledBackup)]);
+            const baseFiles = fs.readdirSync(backupDir)
+              .filter(f => f.endsWith('.asar'))
+              .map(f => {
+                const p = path.resolve(backupDir, f);
+                return { p, mtime: fs.statSync(p).mtimeMs };
+              })
+              .filter(item => !keepSet.has(item.p))
+              .sort((a, b) => b.mtime - a.mtime);
+            for (const staleBase of baseFiles.slice(1)) {
+              try { fs.unlinkSync(staleBase.p); } catch { }
+            }
+          }
+        } catch { }
 
         installCommitted = true;
         try {

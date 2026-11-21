@@ -86,10 +86,12 @@ function resolvePython() {
         candidates.push(path.join(localPrograms, dir, 'python.exe'));
       }
     }
+  } else {
+    candidates.push('/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3');
   }
   for (const p of candidates) {
     try {
-      if (p && fs.existsSync(p) && fs.statSync(p).size > 0) {
+      if (p && !p.toLowerCase().includes('windowsapps') && fs.existsSync(p) && fs.statSync(p).size > 0) {
         cachedPython = p;
         return cachedPython;
       }
@@ -97,10 +99,13 @@ function resolvePython() {
   }
   for (const cmd of process.platform === 'win32' ? ['python', 'python3', 'py'] : ['python3', 'python']) {
     try {
-      const check = spawnSync(cmd, ['-c', 'import sys; print(sys.executable)'], { encoding: 'utf8', timeout: 3000, windowsHide: true });
+      const check = spawnSync(cmd, ['-E', '-c', 'import sys; print(sys.executable)'], { encoding: 'utf8', timeout: 1500, windowsHide: true });
       if (check.status === 0 && check.stdout.trim()) {
-        cachedPython = check.stdout.trim().split(/\r?\n/)[0];
-        return cachedPython;
+        const resolvedExe = check.stdout.trim().split(/\r?\n/)[0];
+        if (resolvedExe && !resolvedExe.toLowerCase().includes('windowsapps')) {
+          cachedPython = resolvedExe;
+          return cachedPython;
+        }
       }
     } catch { }
   }
@@ -405,7 +410,8 @@ function runPythonScan(items, signal = null) {
     const py = resolvePython();
     if (!py) return reject(new Error('本地 Python 解析环境不可用'));
     const source = fs.readFileSync(path.join(__dirname, 'attachment_scan.py'), 'utf8');
-    const child = spawn(py, ['-I', '-c', source, '--json-lines'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    // 使用 -E 隔离外部 PYTHON* 环境变量干扰，同时保留用户级 site-packages 中的 pypdf/openpyxl 解析能力
+    const child = spawn(py, ['-E', '-c', source, '--json-lines'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '', errors = '', timedOut = false, aborted = false;
     const completed = [];
     const onAbort = () => { aborted = true; try { child.kill(); } catch { } };
@@ -533,7 +539,7 @@ async function scanFiles(media, scanOptions = {}) {
       for (const result of parsed) {
         const job = work.find(w => w.key === result.key);
         if (job) {
-          if (result && result.status !== 'unknown') {
+          if (result && result.status !== 'unknown' && !result.retriable) {
             setBoundedMap(filesCache, job.cacheKey, result, FILES_CACHE_MAX_ENTRIES);
           }
           results.set(job.key, result);
@@ -618,19 +624,24 @@ async function collect(origin, id, options = {}) {
       let latest = null;
       const count = Number(full.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
       const tail = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, count - 3), includeMessages: false });
-      let knownCascadeConfigs = Array.isArray(cachedHostUserStatus?.cascadeModelConfigs) ? cachedHostUserStatus.cascadeModelConfigs : [];
+      const originScope = normalizeQuotaOriginScope({ origin });
+      let scopedHostStatus = cachedUserStatusByOrigin.get(originScope)?.status || null;
+      let knownCascadeConfigs = Array.isArray(scopedHostStatus?.cascadeModelConfigs) ? scopedHostStatus.cascadeModelConfigs : [];
       const hasAnyCap = knownCascadeConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
       if (!knownCascadeConfigs.length || !hasAnyCap) {
         try {
           const freshStatus = await fetchUserStatusFromHost({ origin });
-          if (Array.isArray(freshStatus?.cascadeModelConfigs) && freshStatus.cascadeModelConfigs.length) {
-            knownCascadeConfigs = freshStatus.cascadeModelConfigs;
+          if (freshStatus) {
+            scopedHostStatus = freshStatus;
+            if (Array.isArray(freshStatus.cascadeModelConfigs) && freshStatus.cascadeModelConfigs.length) {
+              knownCascadeConfigs = freshStatus.cascadeModelConfigs;
+            }
           }
         } catch { }
       }
       const mergedCascadeConfigs = mergeModelCapabilitiesIntoConfigs(
         knownCascadeConfigs,
-        cachedHostUserStatus?.availableModelDetails || null,
+        scopedHostStatus?.availableModelDetails || null,
         stepCapabilities
       );
       let latestModel = null;
@@ -672,7 +683,7 @@ async function collect(origin, id, options = {}) {
     const unknownFiles = attachments.filter(a => a.status !== 'parsed').length;
     const compactCascadeConfigs = mergedCascadeConfigs.map(sanitizeCascadeModelConfig).filter(Boolean);
     const modelCapabilitiesById = {
-      ...(cachedHostUserStatus?.availableModelDetails || {}),
+      ...(scopedHostStatus?.availableModelDetails || {}),
       ...stepCapabilities
     };
     const result = { version: PROJECT_VERSION, conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
@@ -3547,14 +3558,15 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     monthUnpriced.tokens
   );
 
-  // 9. 参考模型折算（官方标准价格表 2026-11-08）
+  // 9. 参考模型折算（动态对齐当前自然日阶梯费率表）
+  const activePricingDate = formatLocalDateKey(new Date());
   const referenceCostAll = calculateReferenceModelCost({
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     cacheTokens: totalCacheTokens,
     totalTokens: grandTotalTokens
   }, 'gemini-3.8-flash', {
-    pricingDate: '2026-11-08',
+    pricingDate: activePricingDate,
     mode: 'all'
   });
 
@@ -3564,7 +3576,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     cacheTokens: currentMonthCache,
     totalTokens: monthTokens
   }, 'gemini-3.8-flash', {
-    pricingDate: '2026-11-08',
+    pricingDate: activePricingDate,
     mode: 'all'
   });
 
@@ -3574,7 +3586,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     cacheTokens: totalCacheTokens,
     totalTokens: grandTotalTokens
   }, 'gemini-3.8-flash', {
-    pricingDate: '2026-11-09',
+    pricingDate: activePricingDate,
     mode: 'unpriced_only',
     knownUsage: {
       byCategory: costEstimateAll.byCategory,
@@ -3588,7 +3600,7 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
     cacheTokens: currentMonthCache,
     totalTokens: monthTokens
   }, 'gemini-3.8-flash', {
-    pricingDate: '2026-11-09',
+    pricingDate: activePricingDate,
     mode: 'unpriced_only',
     knownUsage: {
       byCategory: costEstimateCurrentMonth.byCategory,
@@ -5349,15 +5361,16 @@ async function applyUpdateAsync(options = {}) {
       return { ok: false, error: `安装包文件名 (${packageAsset.name}) 不符合官方命名规范 (${standardPackageName})，拒绝安装`, htmlUrl: targetRelease.htmlUrl };
     }
 
-    // 严格验证下载地址的官方仓库归属
-    if (!isOfficialAssetDownloadUrl(checksumAsset.browser_download_url, 'checksums.txt')) {
+    // 严格验证下载地址的官方仓库归属与发布标签绑定
+    if (!isOfficialAssetDownloadUrl(checksumAsset.browser_download_url, 'checksums.txt', targetRelease.tagName)) {
       return { ok: false, error: '校验文件下载地址不属于官方仓库，拒绝安装', htmlUrl: targetRelease.htmlUrl };
     }
-    if (!isOfficialAssetDownloadUrl(packageAsset.browser_download_url, packageAsset.name)) {
+    if (!isOfficialAssetDownloadUrl(packageAsset.browser_download_url, packageAsset.name, targetRelease.tagName)) {
       return { ok: false, error: '安装包下载地址不属于官方仓库，拒绝安装', htmlUrl: targetRelease.htmlUrl };
     }
 
     const crypto = require('crypto');
+    const zlib = require('zlib');
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-meter-update-'));
     const zipPath = path.join(tmpDir, packageAsset.name);
     const checksumPath = path.join(tmpDir, 'checksums.txt');
@@ -5414,6 +5427,107 @@ async function applyUpdateAsync(options = {}) {
       return { ok: false, error: `SHA-256 校验失败 (期望: ${expectedSha}, 实际: ${actualSha})，拒绝安装`, htmlUrl: targetRelease.htmlUrl };
     }
 
+    // 解压前解析 ZIP 中央目录头，阻断路径穿越 (Zip-Slip) 与符号链接逃逸，并提供无外部命令依赖的原生解压能力
+    const parseAndVerifyZipCentralDir = (buf) => {
+      if (buf.length < 22) throw new Error('ZIP 归档体积异常过小');
+      let eocdOffset = -1;
+      const minSearch = Math.max(0, buf.length - 65558);
+      for (let i = buf.length - 22; i >= minSearch; i--) {
+        if (buf.readUInt32LE(i) === 0x06054b50) {
+          eocdOffset = i;
+          break;
+        }
+      }
+      if (eocdOffset < 0) throw new Error('无效的 ZIP 归档结构（缺失 EOCD）');
+      const totalEntries = buf.readUInt16LE(eocdOffset + 10);
+      const cdSize = buf.readUInt32LE(eocdOffset + 12);
+      const cdOffset = buf.readUInt32LE(eocdOffset + 16);
+      if (cdOffset + cdSize > eocdOffset) throw new Error('ZIP 中央目录边界越界');
+      const parsedEntries = [];
+      let ptr = cdOffset;
+      for (let idx = 0; idx < totalEntries; idx++) {
+        if (ptr + 46 > eocdOffset || buf.readUInt32LE(ptr) !== 0x02014b50) {
+          throw new Error('ZIP 中央目录条目头损坏');
+        }
+        const compMethod = buf.readUInt16LE(ptr + 10);
+        const compSize = buf.readUInt32LE(ptr + 20);
+        const uncompSize = buf.readUInt32LE(ptr + 24);
+        const nameLen = buf.readUInt16LE(ptr + 28);
+        const extraLen = buf.readUInt16LE(ptr + 30);
+        const commentLen = buf.readUInt16LE(ptr + 32);
+        const extAttr = buf.readUInt32LE(ptr + 38);
+        const localHeaderOff = buf.readUInt32LE(ptr + 42);
+        const entryName = buf.subarray(ptr + 46, ptr + 46 + nameLen).toString('utf8');
+        ptr += 46 + nameLen + extraLen + commentLen;
+
+        if (!entryName || entryName.includes('\0') || entryName.includes('\\')) {
+          throw new Error(`拒绝不安全的压缩包条目名: ${entryName}`);
+        }
+        const posixNorm = path.posix.normalize(entryName);
+        if (posixNorm.startsWith('/') || posixNorm === '..' || posixNorm.startsWith('../') || /^[a-zA-Z]:/.test(posixNorm)) {
+          throw new Error(`检测到 ZIP 路径穿越风险条目: ${entryName}`);
+        }
+        const unixFileType = ((extAttr >>> 16) & 0o170000);
+        if (unixFileType === 0o120000) {
+          throw new Error(`拒绝包含符号链接的更新包条目: ${entryName}`);
+        }
+        parsedEntries.push({
+          name: posixNorm,
+          isDir: entryName.endsWith('/') || unixFileType === 0o040000,
+          unixMode: (extAttr >>> 16) & 0o777,
+          compMethod,
+          compSize,
+          uncompSize,
+          localHeaderOff
+        });
+      }
+      return parsedEntries;
+    };
+
+    const extractVerifiedZipPureNode = (buf, entries, destRoot) => {
+      const resolvedRoot = path.resolve(destRoot);
+      for (const ent of entries) {
+        const outPath = path.resolve(resolvedRoot, ent.name);
+        if (outPath !== resolvedRoot && !outPath.startsWith(resolvedRoot + path.sep)) {
+          throw new Error(`解压目标越界: ${ent.name}`);
+        }
+        if (ent.isDir) {
+          fs.mkdirSync(outPath, { recursive: true });
+          continue;
+        }
+        const lh = ent.localHeaderOff;
+        if (lh + 30 > buf.length || buf.readUInt32LE(lh) !== 0x04034b50) {
+          throw new Error(`ZIP 本地文件头损坏: ${ent.name}`);
+        }
+        const lNameLen = buf.readUInt16LE(lh + 26);
+        const lExtraLen = buf.readUInt16LE(lh + 28);
+        const dataStart = lh + 30 + lNameLen + lExtraLen;
+        const compSlice = buf.subarray(dataStart, dataStart + ent.compSize);
+        let rawOut;
+        if (ent.compMethod === 0) {
+          rawOut = compSlice;
+        } else if (ent.compMethod === 8) {
+          rawOut = zlib.inflateRawSync(compSlice, { maxOutputLength: 64 * 1024 * 1024 });
+        } else {
+          throw new Error(`不支持的 ZIP 压缩算法 (${ent.compMethod}): ${ent.name}`);
+        }
+        fs.mkdirSync(path.dirname(outPath), { recursive: true });
+        fs.writeFileSync(outPath, rawOut);
+        if (process.platform !== 'win32' && (ent.unixMode & 0o111)) {
+          try { fs.chmodSync(outPath, 0o755); } catch { }
+        }
+      }
+    };
+
+    let verifiedZipEntries = null;
+    if (typeof options._extractZip !== 'function') {
+      try {
+        verifiedZipEntries = parseAndVerifyZipCentralDir(fileBuf);
+      } catch (zipVerifyErr) {
+        return { ok: false, error: `压缩包安全结构校验未通过: ${zipVerifyErr.message}`, htmlUrl: targetRelease.htmlUrl };
+      }
+    }
+
     fs.mkdirSync(extractDir, { recursive: true });
     let extractRes;
     if (typeof options._extractZip === 'function') {
@@ -5423,10 +5537,15 @@ async function applyUpdateAsync(options = {}) {
       } catch (err) {
         extractRes = { status: 1, error: err };
       }
-    } else if (process.platform === 'win32') {
-      extractRes = spawnSync('tar', ['-xf', zipPath, '-C', extractDir], { stdio: 'ignore', windowsHide: true });
-    } else {
-      extractRes = spawnSync('unzip', ['-q', zipPath, '-d', extractDir], { stdio: 'ignore' });
+    } else if (verifiedZipEntries) {
+      try {
+        extractVerifiedZipPureNode(fileBuf, verifiedZipEntries, extractDir);
+        extractRes = { status: 0 };
+      } catch {
+        extractRes = process.platform === 'win32'
+          ? spawnSync('tar', ['-xf', zipPath, '-C', extractDir], { stdio: 'ignore', windowsHide: true })
+          : spawnSync('unzip', ['-q', zipPath, '-d', extractDir], { stdio: 'ignore' });
+      }
     }
     if (extractRes && extractRes.status !== 0) {
       return { ok: false, error: '解压更新安装包失败，终止安装', htmlUrl: targetRelease.htmlUrl };
@@ -5437,31 +5556,60 @@ async function applyUpdateAsync(options = {}) {
       return { ok: false, error: '解压包中缺少 cli.js 安装入口', htmlUrl: targetRelease.htmlUrl };
     }
 
+    // 先同步更新持久化 live-runtime，确保即使运行期 app.asar 被宿主文件锁占用或处于免改包模式也能完成热重载
+    const liveRuntimeDir = syncLiveRuntimeBundle(extractDir, {
+      version: targetRelease.version,
+      stateDir: options.stateDir
+    });
+
+    const { getStateDir } = require('./asar-engine');
+    const effStateDir = options.stateDir ? path.resolve(options.stateDir) : getStateDir();
+    const isZeroAsarMode = fs.existsSync(path.join(effStateDir, '.zero-asar-mode.json'));
+    if (isZeroAsarMode && !options._spawn) {
+      cachedUpdateCheck = null;
+      cachedUpdateCheckAt = 0;
+      return {
+        ok: true,
+        diskInstalled: true,
+        zeroAsarUpdated: true,
+        liveInjected: false,
+        backendHotReloaded: false,
+        liveRuntimeDir: liveRuntimeDir || null,
+        version: targetRelease.version,
+        installedVersion: targetRelease.version,
+        diagnostics: {
+          checksums: checksumDl.diagnostics,
+          package: packageDl.diagnostics
+        }
+      };
+    }
+
     const runtimeResolver = options._resolveNodeRuntime || resolveNodeRuntime;
     const runtimeInfo = runtimeResolver();
     const subArgs = [...runtimeInfo.args, cliPath, 'install'];
 
-    // 检查是否存在已记录的自定义安装路径，确保更新子进程继续更新原目标
+    // 检查是否存在已记录的自定义安装路径与原始源码目录，确保更新子进程继续更新原目标且不污染 installerDir
     let recordedInstalledPath = options.targetPath || null;
-    if (!recordedInstalledPath) {
-      try {
-        const { getStateDir } = require('./asar-engine');
-        const stateDir = getStateDir();
-        const candidatePaths = [
-          path.join(stateDir, 'installation.json'),
-          path.join(__dirname, 'installation.json')
-        ];
-        for (const p of candidatePaths) {
-          if (fs.existsSync(p)) {
-            const manifestData = JSON.parse(fs.readFileSync(p, 'utf8'));
-            if (manifestData && manifestData.installed && typeof manifestData.installed === 'string') {
-              recordedInstalledPath = manifestData.installed;
-              break;
+    let preservedInstallerDir = null;
+    try {
+      const candidatePaths = [
+        path.join(effStateDir, 'installation.json'),
+        path.join(__dirname, 'installation.json')
+      ];
+      for (const p of candidatePaths) {
+        if (fs.existsSync(p)) {
+          const manifestData = JSON.parse(fs.readFileSync(p, 'utf8'));
+          if (!recordedInstalledPath && manifestData?.installed && typeof manifestData.installed === 'string') {
+            recordedInstalledPath = manifestData.installed;
+          }
+          if (!preservedInstallerDir && manifestData?.installerDir && typeof manifestData.installerDir === 'string') {
+            if (!path.resolve(manifestData.installerDir).startsWith(path.resolve(os.tmpdir()))) {
+              preservedInstallerDir = manifestData.installerDir;
             }
           }
         }
-      } catch { }
-    }
+      }
+    } catch { }
     if (recordedInstalledPath && typeof recordedInstalledPath === 'string') {
       subArgs.push('--path', recordedInstalledPath);
     }
@@ -5492,7 +5640,11 @@ async function applyUpdateAsync(options = {}) {
       try {
         child = spawner(runtimeInfo.runtime, subArgs, {
           cwd: extractDir,
-          env: { ...(runtimeInfo.env || {}), AG_EMIT_INSTALL_META: '1' },
+          env: {
+            ...(runtimeInfo.env || {}),
+            AG_EMIT_INSTALL_META: '1',
+            ...(preservedInstallerDir ? { AG_PRESERVE_INSTALLER_DIR: preservedInstallerDir } : {})
+          },
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true
         });
@@ -5516,16 +5668,35 @@ async function applyUpdateAsync(options = {}) {
 
     if (execRes.code !== 0) {
       const detail = (execRes.stderr || execRes.stdout || `退出码 ${execRes.code}`).trim();
-      return { ok: false, error: `热安装执行失败: ${detail}` };
+      const isAsarLockedByRunningHost = Boolean(
+        liveRuntimeDir &&
+        /EBUSY|EPERM|被运行中的 Antigravity 锁定/i.test(detail)
+      );
+      if (!isAsarLockedByRunningHost) {
+        return { ok: false, error: `热安装执行失败: ${detail}` };
+      }
+      // Windows 宿主运行期锁定 app.asar 时，保留已就绪的 live-runtime 供主进程立即拉起新版 live-host 免重启生效
+      cachedUpdateCheck = null;
+      cachedUpdateCheckAt = 0;
+      return {
+        ok: true,
+        diskInstalled: true,
+        asarLockedPendingRestart: true,
+        liveInjected: false,
+        backendHotReloaded: false,
+        liveRuntimeDir,
+        version: targetRelease.version,
+        installedVersion: targetRelease.version,
+        diagnostics: {
+          checksums: checksumDl.diagnostics,
+          package: packageDl.diagnostics
+        }
+      };
     }
 
     cachedUpdateCheck = null;
     cachedUpdateCheckAt = 0;
 
-    const liveRuntimeDir = syncLiveRuntimeBundle(extractDir, {
-      version: targetRelease.version,
-      stateDir: options.stateDir
-    });
     const installMeta = parseInstallStdoutMeta(execRes.stdout);
     const liveInjected = Boolean(
       installMeta?.liveInjected === true ||

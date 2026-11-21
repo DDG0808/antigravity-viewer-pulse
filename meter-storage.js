@@ -253,11 +253,19 @@ function acquireSyncFileLock(targetPath, timeoutMs = 15000) {
       }
       try {
         const content = fs.readFileSync(lockFile, 'utf8');
-        const pid = parseInt(String(content).split(':')[0], 10);
+        const parts = String(content).split(':');
+        const pid = parseInt(parts[0], 10);
+        const createdAt = parseInt(parts[1], 10);
         if (pid && !isNaN(pid)) {
           let running = true;
-          try { process.kill(pid, 0); } catch { running = false; }
-          if (!running) {
+          try {
+            process.kill(pid, 0);
+          } catch (killErr) {
+            // EPERM 代表进程存活但属于其他高权限用户，仅 ESRCH 才能判定进程已消亡
+            running = Boolean(killErr && killErr.code === 'EPERM');
+          }
+          const isStale = Number.isFinite(createdAt) && (Date.now() - createdAt > 120000);
+          if (!running || isStale) {
             try { fs.unlinkSync(lockFile); } catch {}
             continue;
           }

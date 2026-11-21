@@ -92,16 +92,34 @@ const builtinAsar = {
           const relPath = relDir ? path.join(relDir, name) : name;
           if (info.files) {
             walk(info, targetPath, relPath);
+          } else if (typeof info.link === 'string') {
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            const linkDest = path.resolve(destDir, info.link);
+            const relBase = path.relative(destDir, linkDest);
+            if (!relBase.startsWith('..') && !path.isAbsolute(relBase)) {
+              const relLink = path.relative(path.dirname(targetPath), linkDest);
+              try { if (fs.lstatSync(targetPath)) fs.unlinkSync(targetPath); } catch {}
+              try { fs.symlinkSync(relLink, targetPath); } catch {}
+            }
           } else if (info.unpacked) {
             const unpackedSrc = path.join(archivePath + '.unpacked', relPath);
             if (rawFs.existsSync(unpackedSrc)) {
               fs.mkdirSync(path.dirname(targetPath), { recursive: true });
               rawFs.copyFileSync(unpackedSrc, targetPath);
+              if (info.executable && process.platform !== 'win32') {
+                try { fs.chmodSync(targetPath, 0o755); } catch {}
+              }
             }
           } else {
-            const buf = Buffer.alloc(info.size);
-            rawFs.readSync(fd, buf, 0, info.size, baseOffset + Number(info.offset));
+            const fileSize = Math.max(0, Number(info.size) || 0);
+            const buf = Buffer.alloc(fileSize);
+            if (fileSize > 0) {
+              rawFs.readSync(fd, buf, 0, fileSize, baseOffset + Number(info.offset));
+            }
             fs.writeFileSync(targetPath, buf);
+            if (info.executable && process.platform !== 'win32') {
+              try { fs.chmodSync(targetPath, 0o755); } catch {}
+            }
           }
         }
       }
@@ -129,11 +147,22 @@ const builtinAsar = {
         const fullPath = path.join(currentDir, entry.name);
         const childPosix = relPosix ? `${relPosix}/${entry.name}` : entry.name;
         const isUnpacked = unpackMatcher(childPosix);
-        if (entry.isDirectory()) {
+        if (entry.isSymbolicLink()) {
+          try {
+            const rawTarget = fs.readlinkSync(fullPath);
+            const resolvedLink = path.resolve(path.dirname(fullPath), rawTarget);
+            const relFromRoot = path.relative(srcDir, resolvedLink).replace(/\\/g, '/');
+            if (!relFromRoot.startsWith('..') && !path.isAbsolute(relFromRoot)) {
+              files[entry.name] = { link: relFromRoot };
+            }
+          } catch {}
+        } else if (entry.isDirectory()) {
           const node = { files: build(fullPath, childPosix) };
           if (isUnpacked) node.unpacked = true;
           files[entry.name] = node;
         } else if (entry.isFile()) {
+          const st = fs.statSync(fullPath);
+          const isExecutable = process.platform !== 'win32' && Boolean(st.mode & 0o111);
           const buf = fs.readFileSync(fullPath);
           const hash = crypto.createHash('sha256').update(buf).digest('hex');
           const blockHashes = [];
@@ -149,9 +178,12 @@ const builtinAsar = {
             const unpackedTarget = path.join(destAsar + '.unpacked', childPosix);
             fs.mkdirSync(path.dirname(unpackedTarget), { recursive: true });
             fs.copyFileSync(fullPath, unpackedTarget);
-            files[entry.name] = { size: buf.length, unpacked: true, integrity };
+            if (isExecutable) {
+              try { fs.chmodSync(unpackedTarget, 0o755); } catch {}
+            }
+            files[entry.name] = { size: buf.length, unpacked: true, ...(isExecutable ? { executable: true } : {}), integrity };
           } else {
-            files[entry.name] = { size: buf.length, offset: String(offset), integrity };
+            files[entry.name] = { size: buf.length, offset: String(offset), ...(isExecutable ? { executable: true } : {}), integrity };
             offset += buf.length;
             chunks.push(buf);
           }
@@ -181,6 +213,9 @@ const builtinAsar = {
     } finally {
       rawFs.closeSync(fd);
     }
+  },
+  createPackage(srcDir, destAsar) {
+    return this.createPackageWithOptions(srcDir, destAsar, {});
   }
 };
 
@@ -239,20 +274,36 @@ function getStateDir() {
 function findAsarPath(customPath) {
   const rawFs = getRawFs();
   if (customPath) {
-    let resolved = path.resolve(customPath);
-    if (rawFs.existsSync(resolved) && rawFs.statSync(resolved).isDirectory()) {
-      const inRes = path.join(resolved, 'resources', 'app.asar');
-      if (rawFs.existsSync(inRes)) return inRes;
-      const direct = path.join(resolved, 'app.asar');
-      if (rawFs.existsSync(direct)) return direct;
+    const resolved = path.resolve(customPath);
+    if (rawFs.existsSync(resolved)) {
+      const st = rawFs.statSync(resolved);
+      if (st.isDirectory()) {
+        // 兼容直接传入 macOS .app 应用包、Resources 目录或普通安装根目录
+        const dirCandidates = [
+          path.join(resolved, 'Contents', 'Resources', 'app.asar'),
+          path.join(resolved, 'resources', 'app.asar'),
+          path.join(resolved, 'Resources', 'app.asar'),
+          path.join(resolved, 'app.asar')
+        ];
+        for (const cand of dirCandidates) {
+          if (rawFs.existsSync(cand) && rawFs.statSync(cand).isFile()) return cand;
+        }
+        throw new Error(`Could not find app.asar inside directory: ${customPath}`);
+      }
+      if (st.isFile()) return resolved;
     }
-    if (rawFs.existsSync(resolved)) return resolved;
     throw new Error(`Could not find app.asar at specified path: ${customPath}`);
   }
-  // 若在 Electron 宿主运行时内部被调用，优先定位宿主自身捆绑的 resources/app.asar
+  // 若在 Electron 宿主运行时内部被调用，优先定位宿主自身捆绑的 app.asar（同时兼容 macOS Contents/Resources 与 Win/Linux resources）
   if (process.versions && process.versions.electron && process.execPath) {
-    const hostAsar = path.join(path.dirname(process.execPath), 'resources', 'app.asar');
-    if (rawFs.existsSync(hostAsar)) return hostAsar;
+    const execDir = path.dirname(process.execPath);
+    const hostCandidates = [
+      path.join(execDir, 'resources', 'app.asar'),
+      path.resolve(execDir, '..', 'Resources', 'app.asar')
+    ];
+    for (const hostAsar of hostCandidates) {
+      if (rawFs.existsSync(hostAsar) && rawFs.statSync(hostAsar).isFile()) return hostAsar;
+    }
   }
   const home = os.homedir();
   const candidates = [];

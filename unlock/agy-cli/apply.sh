@@ -17,7 +17,22 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Windows 上常见只有 python，部分环境只有 python3
 PY="$(command -v python || command -v python3 || true)"
 [ -n "$PY" ] || { echo "[x] 找不到 python / python3"; exit 1; }
-AGY="${AGY_BIN:-$(cygpath -u "$LOCALAPPDATA")/agy/bin/agy.exe}"
+if [ -n "${AGY_BIN:-}" ]; then
+  AGY="$AGY_BIN"
+else
+  if command -v cygpath >/dev/null 2>&1 && [ -n "${LOCALAPPDATA:-}" ]; then
+    LOCAL_APPDATA_UNIX="$(cygpath -u "$LOCALAPPDATA")"
+  elif [ -n "${LOCALAPPDATA:-}" ]; then
+    LOCAL_APPDATA_UNIX="${LOCALAPPDATA//\\//}"
+  else
+    LOCAL_APPDATA_UNIX="$HOME/AppData/Local"
+  fi
+  if [ -f "$HOME/.gemini/bin/agy.exe" ]; then
+    AGY="$HOME/.gemini/bin/agy.exe"
+  else
+    AGY="$LOCAL_APPDATA_UNIX/agy/bin/agy.exe"
+  fi
+fi
 
 [ -f "$AGY" ] || { echo "[x] 找不到 agy.exe: $AGY"; exit 1; }
 

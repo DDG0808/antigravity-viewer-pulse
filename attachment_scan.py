@@ -17,19 +17,49 @@ sys.path.insert(0, os.path.join(_get_state_dir(), 'python-packages'))
 
 MAX_BYTES = 256 * 1024 * 1024
 MAX_UNPACKED = 512 * 1024 * 1024
+MAX_ENTRY_BYTES = 64 * 1024 * 1024
 MAX_CHARS = 100_000_000
+_CJK_RE = re.compile(r'[\u2e80-\u9fff\uf900-\ufaff]')
+
+def _safe_zip_xml_bytes(z, entry_name, budget_tracker):
+    # 限制真实解压字节数并拦截 XML 实体定义，防止篡改 ZIP 头部的压缩炸弹与实体指数膨胀
+    chunks = []
+    read_so_far = 0
+    with z.open(entry_name) as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            read_so_far += len(chunk)
+            budget_tracker[0] += len(chunk)
+            if read_so_far > MAX_ENTRY_BYTES or budget_tracker[0] > MAX_UNPACKED:
+                raise ValueError('真实解压体积超过安全阈值，本地扫描未完成')
+            if b'<!ENTITY' in chunk or b'<!entity' in chunk:
+                raise ValueError('检测到不安全的 XML 实体声明，已拒绝解析')
+            chunks.append(chunk)
+    return b''.join(chunks)
 
 class Counter:
     def __init__(self):
         self.chars = self.bytes = self.cjk = 0
+        self.timed_out = False
         self.deadline = time.monotonic() + 45
     def add(self, value):
         text = '' if value is None else str(value)
+        if not text:
+            return
         self.chars += len(text)
         self.bytes += len(text.encode('utf-8', errors='replace'))
-        self.cjk += len(re.findall(r'[\u2e80-\u9fff\uf900-\ufaff]', text))
-        if self.chars > MAX_CHARS or time.monotonic() > self.deadline:
-            raise ValueError('达到本地扫描资源限制，统计不完整')
+        # 按切片迭代匹配而非一次性构建全量列表，避免超大文本产生数千万字符串对象撑爆内存
+        step = 65536
+        for idx in range(0, len(text), step):
+            seg = text[idx:idx + step]
+            self.cjk += sum(1 for _ in _CJK_RE.finditer(seg))
+            if time.monotonic() > self.deadline:
+                self.timed_out = True
+                raise ValueError('达到本地扫描时间上限，统计不完整')
+        if self.chars > MAX_CHARS:
+            raise ValueError('达到本地扫描字符上限，统计不完整')
     def result(self):
         import math
         mid = (self.chars - self.cjk) / 4 + self.cjk * 1.2
@@ -92,6 +122,7 @@ def _translate_shared_formula_fallback(original, origin_ref, target_ref):
     return token_re.sub(_repl, original)
 
 def xlsx_scan(path, counter, result):
+    budget_tracker = [0]
     with zipfile.ZipFile(path) as z:
         infos = z.infolist()
         if sum(i.file_size for i in infos) > MAX_UNPACKED:
@@ -99,14 +130,15 @@ def xlsx_scan(path, counter, result):
         names = set(z.namelist())
         strings = []
         if 'xl/sharedStrings.xml' in names:
-            with z.open('xl/sharedStrings.xml') as f:
-                for event, e in ET.iterparse(f, events=('end',)):
-                    if local(e.tag) == 'si':
-                        strings.append(''.join(t.text or '' for t in e.iter() if local(t.tag) == 't'))
-                        e.clear()
+            ss_bytes = _safe_zip_xml_bytes(z, 'xl/sharedStrings.xml', budget_tracker)
+            import io as _io
+            for event, e in ET.iterparse(_io.BytesIO(ss_bytes), events=('end',)):
+                if local(e.tag) == 'si':
+                    strings.append(''.join(t.text or '' for t in e.iter() if local(t.tag) == 't'))
+                    e.clear()
         result.update(sheets=0, hiddenSheets=0, cells=0, formulas=0)
         if 'xl/workbook.xml' in names:
-            workbook = ET.fromstring(z.read('xl/workbook.xml'))
+            workbook = ET.fromstring(_safe_zip_xml_bytes(z, 'xl/workbook.xml', budget_tracker))
             for e in workbook.iter():
                 if local(e.tag) == 'sheet':
                     counter.add(e.attrib.get('name', ''))
@@ -117,51 +149,52 @@ def xlsx_scan(path, counter, result):
                 continue
             result['sheets'] += 1
             shared_formulas = {}
-            with z.open(name) as f:
-                for event, e in ET.iterparse(f, events=('end',)):
-                    tag = local(e.tag)
-                    if tag == 'c':
-                        typ = e.attrib.get('t', '')
-                        value = next((x.text or '' for x in e if local(x.tag) == 'v'), '')
-                        formula_node = next((x for x in e if local(x.tag) == 'f'), None)
-                        formula = formula_node.text or '' if formula_node is not None else ''
-                        if formula_node is not None and formula_node.attrib.get('t') == 'shared':
-                            shared_id = formula_node.attrib.get('si', '')
-                            if formula:
-                                shared_formulas[shared_id] = (e.attrib.get('r'), formula)
-                            else:
-                                try:
-                                    origin, original = shared_formulas[shared_id]
-                                    try:
-                                        from openpyxl.formula.translate import Translator
-                                        formula = Translator('=' + original, origin=origin).translate_formula(e.attrib['r']).lstrip('=')
-                                    except ImportError:
-                                        formula = _translate_shared_formula_fallback(original, origin, e.attrib.get('r'))
-                                except Exception:
-                                    warning = '部分共享公式无法展开，仅计入已保存值'
-                                    if warning not in result['unknownParts']: result['unknownParts'].append(warning)
-                        if typ == 's' and value:
-                            try: value = strings[int(value)]
-                            except (IndexError, ValueError): raise ValueError('共享字符串索引异常，统计不完整')
-                        elif typ == 'inlineStr':
-                            value = ''.join(x.text or '' for x in e.iter() if local(x.tag) == 't')
+            ws_bytes = _safe_zip_xml_bytes(z, name, budget_tracker)
+            import io as _io
+            for event, e in ET.iterparse(_io.BytesIO(ws_bytes), events=('end',)):
+                tag = local(e.tag)
+                if tag == 'c':
+                    typ = e.attrib.get('t', '')
+                    value = next((x.text or '' for x in e if local(x.tag) == 'v'), '')
+                    formula_node = next((x for x in e if local(x.tag) == 'f'), None)
+                    formula = formula_node.text or '' if formula_node is not None else ''
+                    if formula_node is not None and formula_node.attrib.get('t') == 'shared':
+                        shared_id = formula_node.attrib.get('si', '')
                         if formula:
-                            counter.add('=' + formula)
-                            result['formulas'] += 1
-                            if not value:
-                                warning = '部分公式没有缓存结果，未重新计算公式'
+                            shared_formulas[shared_id] = (e.attrib.get('r'), formula)
+                        else:
+                            try:
+                                origin, original = shared_formulas[shared_id]
+                                try:
+                                    from openpyxl.formula.translate import Translator
+                                    formula = Translator('=' + original, origin=origin).translate_formula(e.attrib['r']).lstrip('=')
+                                except ImportError:
+                                    formula = _translate_shared_formula_fallback(original, origin, e.attrib.get('r'))
+                            except Exception:
+                                warning = '部分共享公式无法展开，仅计入已保存值'
                                 if warning not in result['unknownParts']: result['unknownParts'].append(warning)
-                        if value or formula:
-                            result['cells'] += 1
-                            counter.add(value)
-                            counter.add('\t')
-                        e.clear()
-                    elif tag == 'row':
-                        e.clear()
+                    if typ == 's' and value:
+                        try: value = strings[int(value)]
+                        except (IndexError, ValueError): raise ValueError('共享字符串索引异常，统计不完整')
+                    elif typ == 'inlineStr':
+                        value = ''.join(x.text or '' for x in e.iter() if local(x.tag) == 't')
+                    if formula:
+                        counter.add('=' + formula)
+                        result['formulas'] += 1
+                        if not value:
+                            warning = '部分公式没有缓存结果，未重新计算公式'
+                            if warning not in result['unknownParts']: result['unknownParts'].append(warning)
+                    if value or formula:
+                        result['cells'] += 1
+                        counter.add(value)
+                        counter.add('\t')
+                    e.clear()
+                elif tag == 'row':
+                    e.clear()
         # Include notes, text boxes, chart labels and defined names separately.
         for name in sorted(names):
             if re.fullmatch(r'xl/(?:comments[^/]*|drawings/[^/]+|charts/[^/]+)\.xml', name):
-                root = ET.fromstring(z.read(name))
+                root = ET.fromstring(_safe_zip_xml_bytes(z, name, budget_tracker))
                 for e in root.iter():
                     if local(e.tag) in ('t', 'text') and e.text:
                         counter.add(e.text)
@@ -174,12 +207,13 @@ def xlsx_scan(path, counter, result):
             result['unknownParts'].append('宏二进制内容未计入')
 
 def office_xml(path, counter, result, prefix):
+    budget_tracker = [0]
     with zipfile.ZipFile(path) as z:
         if sum(i.file_size for i in z.infolist()) > MAX_UNPACKED:
             raise ValueError('解压后体积过大，统计不完整')
         for name in z.namelist():
             if name.startswith(prefix) and name.endswith('.xml'):
-                root = ET.fromstring(z.read(name))
+                root = ET.fromstring(_safe_zip_xml_bytes(z, name, budget_tracker))
                 for e in root.iter():
                     if local(e.tag) in ('t', 'v') and e.text: counter.add(e.text)
         if any('/media/' in n or '/embeddings/' in n for n in z.namelist()):
@@ -305,6 +339,8 @@ def scan(item):
         result.update(c_res)
     result['unknownParts'] = list(dict.fromkeys(result['unknownParts']))
     if result['unknownParts']: result['status'] = 'partial' if counter.chars else 'unknown'
+    if counter.timed_out:
+        result['retriable'] = True
     return result
 
 def parse_image_dimensions_file(path):

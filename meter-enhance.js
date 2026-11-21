@@ -185,6 +185,7 @@ for (const rule of CHINESE_TITLE_RULES) {
 const CHINESE_TITLE_META = {
   zh: { mode: 'zh', enabled: true, label: '自动中文标题 (4~10字)', shortLabel: '中文标题' },
   en: { mode: 'en', enabled: false, label: '官方英文标题', shortLabel: '英文标题' },
+  mixed: { mode: 'mixed', enabled: false, label: '部分规则已汉化', shortLabel: '部分中文' },
   unsupported: { mode: 'unsupported', enabled: false, label: '当前内核无标题特征', shortLabel: '未匹配' }
 };
 
@@ -443,7 +444,8 @@ function parsePeEmbedTemplates(buf) {
   const sysPrefix = 'google3/third_party/jetski/prompt/template_provider/templates/system_prompts/';
   const templates = new Map();
 
-  for (let k = -24; k <= 28; k++) {
+  // 扩大相邻 embed.FS 槽位扫描窗口以容纳后续版本新增模板文件
+  for (let k = -64; k <= 64; k++) {
     const e = entryOff + k * 48;
     if (e < 0 || e + 48 > buf.length) continue;
     const nVa = buf.readBigUInt64LE(e);
@@ -546,10 +548,10 @@ function applyPromptTierToBuffer(buf, bakBuf, tierNum, dirtyRanges = null) {
     }
   }
 
-  // 兼容 v2.29+ genericsystemprompt.applyEdits 启动子串强校验（v2.31+ 已移除该校验则自动跳过）
+  // 兼容 v2.29+ genericsystemprompt.applyEdits 启动子串强校验，支持编译器相对偏移漂移（v2.31+ 已移除该校验则自动跳过）
   const applyEditsPrefix = Buffer.from('488b71104889742458488b711848897424384889d1', 'hex');
-  const applyEditsTailStock = Buffer.from('4883f8010f8474ffffff', 'hex');
-  const applyEditsTailBypass = Buffer.from('4883f801e975ffffff90', 'hex');
+  const applyEditsCmpJeHead = Buffer.from('4883f8010f84', 'hex');
+  const applyEditsCmpJmpHead = Buffer.from('4883f801e9', 'hex');
   const prefixOff = bakBuf.indexOf(applyEditsPrefix);
 
   let strippedBytes = 0;
@@ -560,9 +562,21 @@ function applyPromptTierToBuffer(buf, bakBuf, tierNum, dirtyRanges = null) {
       const tailOff = prefixOff + applyEditsPrefix.length + 5;
       if (tailOff + 10 <= bakBuf.length) {
         const curTail = bakBuf.subarray(tailOff, tailOff + 10);
-        if (curTail.equals(applyEditsTailStock) || curTail.equals(applyEditsTailBypass)) {
-          applyEditsTailStock.copy(buf, tailOff);
-          if (Array.isArray(dirtyRanges)) dirtyRanges.push({ start: tailOff, length: 10 });
+        if (curTail.subarray(0, 6).equals(applyEditsCmpJeHead)) {
+          const disp = curTail.readInt32LE(6);
+          if (disp >= -512 && disp < -16) {
+            curTail.copy(buf, tailOff);
+            if (Array.isArray(dirtyRanges)) dirtyRanges.push({ start: tailOff, length: 10 });
+          }
+        } else if (curTail.subarray(0, 5).equals(applyEditsCmpJmpHead) && curTail[9] === 0x90) {
+          const disp = curTail.readInt32LE(5);
+          if (disp >= -511 && disp < -15) {
+            const restoredTail = Buffer.alloc(10);
+            applyEditsCmpJeHead.copy(restoredTail, 0);
+            restoredTail.writeInt32LE(disp - 1, 6);
+            restoredTail.copy(buf, tailOff);
+            if (Array.isArray(dirtyRanges)) dirtyRanges.push({ start: tailOff, length: 10 });
+          }
         }
       }
     }
@@ -603,8 +617,18 @@ function applyPromptTierToBuffer(buf, bakBuf, tierNum, dirtyRanges = null) {
     const tailOff = prefixOff + applyEditsPrefix.length + 5;
     if (tailOff + 10 <= bakBuf.length) {
       const curTail = bakBuf.subarray(tailOff, tailOff + 10);
-      if (curTail.equals(applyEditsTailStock) || curTail.equals(applyEditsTailBypass)) {
-        applyEditsTailBypass.copy(buf, tailOff);
+      if (curTail.subarray(0, 6).equals(applyEditsCmpJeHead)) {
+        const disp = curTail.readInt32LE(6);
+        if (disp >= -512 && disp < -16) {
+          const bypassTail = Buffer.alloc(10);
+          applyEditsCmpJmpHead.copy(bypassTail, 0);
+          bypassTail.writeInt32LE(disp + 1, 5);
+          bypassTail[9] = 0x90;
+          bypassTail.copy(buf, tailOff);
+          if (Array.isArray(dirtyRanges)) dirtyRanges.push({ start: tailOff, length: 10 });
+        }
+      } else if (curTail.subarray(0, 5).equals(applyEditsCmpJmpHead) && curTail[9] === 0x90) {
+        curTail.copy(buf, tailOff);
         if (Array.isArray(dirtyRanges)) dirtyRanges.push({ start: tailOff, length: 10 });
       }
     }
@@ -869,11 +893,11 @@ function writeBinarySafely(targetPath, oldBuf, newBuf, dirtyRanges = null) {
     }
   }
 
-  const stalePath = `${targetPath}.old_run`;
-  const tmpNewPath = `${targetPath}.new_${process.pid}`;
-  try {
-    if (fs.existsSync(stalePath)) fs.unlinkSync(stalePath);
-  } catch {}
+  // 使用唯一后缀避免 Windows 运行期进程占用上一轮 .old_run 时二次热替换 rename 失败
+  contextUnlock.cleanupOldReplacedFiles(targetPath);
+  const uniqSuffix = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const stalePath = `${targetPath}.old_${uniqSuffix}`;
+  const tmpNewPath = `${targetPath}.new_${process.pid}_${uniqSuffix}`;
 
   let renamedOld = false;
   try {
@@ -952,11 +976,15 @@ async function writeBinarySafelyAsync(targetPath, oldBuf, newBuf, dirtyRanges = 
     }
   }
 
-  const stalePath = `${targetPath}.old_run`;
-  const tmpNewPath = `${targetPath}.new_${process.pid}`;
   try {
-    if (fs.existsSync(stalePath)) await fs.promises.unlink(stalePath);
+    if (typeof contextUnlock.cleanupOldReplacedFiles === 'function') {
+      contextUnlock.cleanupOldReplacedFiles(targetPath);
+    }
   } catch {}
+  const uniqSuffix = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  // 采用唯一时间戳后缀而非固定 .old_run，避免客户端重启前连续修改两次时旧进程句柄锁死同一个备份路径
+  const stalePath = `${targetPath}.old_${uniqSuffix}`;
+  const tmpNewPath = `${targetPath}.new_${process.pid}_${uniqSuffix}`;
 
   let renamedOld = false;
   try {
@@ -994,8 +1022,7 @@ function checkLanguageServerRunning() {
     }).toLowerCase();
     return (
       out.includes('"language_server.exe"') ||
-      out.includes('"language_server_windows_x64.exe"') ||
-      out.includes('"agy.exe"')
+      out.includes('"language_server_windows_x64.exe"')
     );
   } catch {
     return false;
@@ -1033,7 +1060,8 @@ function restartLanguageServers() {
     return { ok: false, killed: [], error: '仅支持 Windows 平台重启后台语言服务' };
   }
   const killed = [];
-  for (const img of ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe']) {
+  // 仅重启桌面端后台语言服务，绝不全局强杀用户在外部终端独立运行的 agy.exe CLI 会话
+  for (const img of ['language_server.exe', 'language_server_windows_x64.exe']) {
     try {
       execFileSync('taskkill.exe', ['/F', '/IM', img], {
         encoding: 'utf8',
@@ -1052,7 +1080,7 @@ async function restartLanguageServersAsync() {
   if (process.platform !== 'win32') {
     return { ok: false, killed: [], error: '仅支持 Windows 平台重启后台语言服务' };
   }
-  const images = ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe'];
+  const images = ['language_server.exe', 'language_server_windows_x64.exe'];
   const killed = [];
   await Promise.all(images.map((img) => new Promise((resolve) => {
     execFile('taskkill.exe', ['/F', '/IM', img], {
@@ -1677,13 +1705,39 @@ function applyEnhancePatch(payload = {}, options = {}) {
 
           let bakBuf = null;
           if (!fs.existsSync(bakPath)) {
-            const cleanStockBuf = Buffer.from(origDiskBuf);
             if (curTier === 0) {
+              const cleanStockBuf = Buffer.from(origDiskBuf);
               applyChineseTitlePatchToBuffer(cleanStockBuf, false);
+              fs.writeFileSync(bakPath, cleanStockBuf);
+              bakBuf = cleanStockBuf;
+              logs.push(`[备份] 已创建纯净提示词备份: ${path.basename(bakPath)}`);
+            } else {
+              // 当前二进制已被修改为非 0 档时，严禁将已修改内容伪造写入 orig.bak，尝试从上下文解锁模块的原版备份恢复纯净模板
+              let recoveredClean = null;
+              try {
+                const unlockBakDir = contextUnlock.getUnlockBackupDir(options.backupDir);
+                if (fs.existsSync(unlockBakDir)) {
+                  const origFiles = fs.readdirSync(unlockBakDir).filter(f => f.endsWith('.orig'));
+                  for (const ofName of origFiles) {
+                    const candBuf = fs.readFileSync(path.join(unlockBakDir, ofName));
+                    if (isSamePeBuild(origDiskBuf, candBuf) && detectPromptTier(parsePeEmbedTemplates(candBuf), candBuf) === 0) {
+                      recoveredClean = Buffer.from(candBuf);
+                      applyChineseTitlePatchToBuffer(recoveredClean, false);
+                      break;
+                    }
+                  }
+                }
+              } catch {}
+              if (recoveredClean) {
+                fs.writeFileSync(bakPath, recoveredClean);
+                bakBuf = recoveredClean;
+                logs.push(`[备份] 已从同构建原始基线恢复纯净提示词备份: ${path.basename(bakPath)}`);
+              } else if (promptTier !== null && (promptTier === 0 || promptTier === 1 || promptTier === 2)) {
+                throw new Error(`${target.label} 缺失原版提示词备份且当前内核已处于 ${curTier} 档，已阻止将修改态写入纯净备份；请先通过官方安装包修复原版二进制`);
+              } else {
+                bakBuf = origDiskBuf;
+              }
             }
-            fs.writeFileSync(bakPath, cleanStockBuf);
-            bakBuf = cleanStockBuf;
-            logs.push(`[备份] 已创建纯净提示词备份: ${path.basename(bakPath)}`);
           } else {
             const existingBak = fs.readFileSync(bakPath);
             if (isSamePeBuild(origDiskBuf, existingBak)) {
@@ -1867,12 +1921,36 @@ async function applySingleEnhanceTargetCoreAsync(target, promptTier, chineseTitl
       } else {
         bakBuf = origDiskBuf;
       }
+      bakPreparedFresh = true;
+      localLogs.push(`[备份] 已创建纯净提示词备份: ${path.basename(bakPath)}`);
     } else {
-      await fs.promises.copyFile(target.path, bakPath);
-      bakBuf = origDiskBuf;
+      // 当前二进制已处于修改档位时，严禁将已修改内容伪造写入 orig.bak，优先从上下文解锁原版备份恢复纯净模板
+      let recoveredClean = null;
+      try {
+        const unlockBakDir = contextUnlock.getUnlockBackupDir(options.backupDir);
+        if (fs.existsSync(unlockBakDir)) {
+          const origFiles = (await fs.promises.readdir(unlockBakDir)).filter((f) => f.endsWith('.orig'));
+          for (const ofName of origFiles) {
+            const candBuf = await fs.promises.readFile(path.join(unlockBakDir, ofName));
+            if (isSamePeBuild(origDiskBuf, candBuf) && detectPromptTier(parsePeEmbedTemplates(candBuf), candBuf) === 0) {
+              recoveredClean = Buffer.from(candBuf);
+              applyChineseTitlePatchToBuffer(recoveredClean, false);
+              break;
+            }
+          }
+        }
+      } catch {}
+      if (recoveredClean) {
+        await fs.promises.writeFile(bakPath, recoveredClean);
+        bakBuf = recoveredClean;
+        bakPreparedFresh = true;
+        localLogs.push(`[备份] 已从同构建原始基线恢复纯净提示词备份: ${path.basename(bakPath)}`);
+      } else if (promptTier !== null && (promptTier === 0 || promptTier === 1 || promptTier === 2)) {
+        throw new Error(`${target.label} 缺失原版提示词备份且当前内核已处于 ${curTier} 档，已阻止将修改态写入纯净备份；请先通过官方安装包修复原版二进制`);
+      } else {
+        bakBuf = origDiskBuf;
+      }
     }
-    bakPreparedFresh = true;
-    localLogs.push(`[备份] 已创建纯净提示词备份: ${path.basename(bakPath)}`);
   }
   backupMs = performance.now() - b0;
 
@@ -2296,6 +2374,7 @@ function getOrStartEnhanceWorker() {
     const entry = enhanceWorkerPending.get(msg.id);
     if (!entry) return;
     enhanceWorkerPending.delete(msg.id);
+    if (entry.timer) clearTimeout(entry.timer);
     scheduleEnhanceWorkerIdleCleanup();
     if (msg.ok) entry.resolve({ _workerHandled: true, result: msg.result });
     else entry.resolve({ _workerHandled: true, result: { ok: false, error: msg.error || 'Worker 执行失败' } });
@@ -2305,6 +2384,7 @@ function getOrStartEnhanceWorker() {
     if (enhanceWorkerInstance === w) enhanceWorkerInstance = null;
     for (const [id, entry] of enhanceWorkerPending.entries()) {
       enhanceWorkerPending.delete(id);
+      if (entry.timer) clearTimeout(entry.timer);
       entry.resolve(null);
     }
     try { w.terminate(); } catch {}
@@ -2313,12 +2393,15 @@ function getOrStartEnhanceWorker() {
     if (enhanceWorkerInstance === w) enhanceWorkerInstance = null;
     for (const [id, entry] of enhanceWorkerPending.entries()) {
       enhanceWorkerPending.delete(id);
+      if (entry.timer) clearTimeout(entry.timer);
       entry.resolve(null);
     }
   });
   enhanceWorkerInstance = w;
   return w;
 }
+
+const ENHANCE_WORKER_TASK_TIMEOUT_MS = 45000;
 
 async function runEnhanceWorkerTask(cmd, payload) {
   try {
@@ -2329,10 +2412,23 @@ async function runEnhanceWorkerTask(cmd, payload) {
     const w = getOrStartEnhanceWorker();
     const id = enhanceWorkerReqId++;
     return await new Promise((resolve) => {
-      enhanceWorkerPending.set(id, { resolve });
+      // 为大体积二进制处理设置超时兜底，防止后台线程异常挂死拖垮调用方
+      const timer = setTimeout(() => {
+        const stale = enhanceWorkerPending.get(id);
+        if (!stale) return;
+        enhanceWorkerPending.delete(id);
+        if (enhanceWorkerInstance === w) {
+          enhanceWorkerInstance = null;
+          try { w.terminate(); } catch {}
+        }
+        resolve(null);
+      }, ENHANCE_WORKER_TASK_TIMEOUT_MS);
+      if (typeof timer.unref === 'function') timer.unref();
+      enhanceWorkerPending.set(id, { resolve, timer });
       try {
         w.postMessage({ id, cmd, payload, env: captureEnhanceEnvSnapshot() });
       } catch {
+        clearTimeout(timer);
         enhanceWorkerPending.delete(id);
         resolve(null);
       }

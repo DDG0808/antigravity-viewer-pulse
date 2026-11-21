@@ -5,7 +5,26 @@ function escapeSvgText(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function hexToRgba(colorStr, alpha) {
+  const s = String(colorStr || '').trim();
+  const hexMatch = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hexMatch) {
+    let hex = hexMatch[1];
+    if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  const rgbMatch = s.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (rgbMatch) {
+    return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, ${alpha})`;
+  }
+  return `rgba(56, 189, 248, ${alpha})`;
 }
 
 function formatCompactTokens(val) {
@@ -21,7 +40,15 @@ function drawStreamWaveform(canvas, hostEl, points, isStreaming = false) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const dpr = (typeof globalThis !== 'undefined' && globalThis.devicePixelRatio) ? Math.min(globalThis.devicePixelRatio, 3) : 2;
-  const w = 268;
+  let w = 268;
+  try {
+    if (typeof canvas.getBoundingClientRect === 'function') {
+      const rect = canvas.getBoundingClientRect();
+      if (rect && Number.isFinite(rect.width) && rect.width >= 120) {
+        w = Math.round(rect.width);
+      }
+    }
+  } catch {}
   const h = 70;
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
     canvas.width = Math.round(w * dpr);
@@ -39,7 +66,11 @@ function drawStreamWaveform(canvas, hostEl, points, isStreaming = false) {
   } catch {}
 
   ctx.save();
-  ctx.scale(dpr, dpr);
+  if (typeof ctx.setTransform === 'function') {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  } else {
+    ctx.scale(dpr, dpr);
+  }
   ctx.clearRect(0, 0, w, h);
 
   if (cleanPts.length === 0) {
@@ -88,8 +119,8 @@ function drawStreamWaveform(canvas, hostEl, points, isStreaming = false) {
   ctx.lineTo(0, h);
   ctx.closePath();
   const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, isStreaming ? 'rgba(16, 185, 129, 0.28)' : 'rgba(56, 189, 248, 0.22)');
-  grad.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+  grad.addColorStop(0, isStreaming ? 'rgba(16, 185, 129, 0.28)' : hexToRgba(accent, 0.22));
+  grad.addColorStop(1, isStreaming ? 'rgba(16, 185, 129, 0.0)' : hexToRgba(accent, 0));
   ctx.fillStyle = grad;
   ctx.fill();
 
@@ -133,11 +164,14 @@ function renderDailyHeatmapGrid(containerEl, dailySeries, onHoverDay) {
   }
 }
 
-function renderAlternateHistorySvg(svgEl, mode, buckets, onHoverBucket) {
+function renderAlternateHistorySvg(svgEl, mode, buckets, onHoverBucket, lang = 'zh-CN') {
   if (!svgEl) return;
   const rows = Array.isArray(buckets) ? buckets : [];
   if (!rows.length) {
-    svgEl.innerHTML = `<text x="300" y="58" text-anchor="middle" fill="var(--fg-3)" font-size="11">暂无该周期历史消费记录</text>`;
+    const emptyMsg = typeof translatePulseKey === 'function'
+      ? translatePulseKey(lang, 'chartEmptyHistory')
+      : '暂无该周期历史消费记录';
+    svgEl.innerHTML = `<text x="300" y="58" text-anchor="middle" fill="var(--fg-3)" font-size="11">${escapeSvgText(emptyMsg)}</text>`;
     return;
   }
 
@@ -189,13 +223,14 @@ function renderAlternateHistorySvg(svgEl, mode, buckets, onHoverBucket) {
   }
 }
 
-function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianEl, speedGroups, metric = 'tps', focusModelKey = '', onSelectGroup = null) {
+function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianEl, speedGroups, metric = 'tps', focusModelKey = '', onSelectGroup = null, lang = 'zh-CN') {
   if (!barsContainer || !trendSvg) return;
   const list = Array.isArray(speedGroups) ? speedGroups : [];
+  const tr = (k, vars) => (typeof translatePulseKey === 'function' ? translatePulseKey(lang, k, vars) : k);
 
   if (!list.length) {
-    barsContainer.innerHTML = `<div style="font-size:11.5px;color:var(--fg-3);padding:16px 0;text-align:center">尚无实测流式生成样本，完成一轮模型对话后自动记录各模型速率与首字延迟</div>`;
-    trendSvg.innerHTML = `<text x="290" y="50" text-anchor="middle" fill="var(--fg-3)" font-size="11">等待首条有效流式样本...</text>`;
+    barsContainer.innerHTML = `<div style="font-size:11.5px;color:var(--fg-3);padding:16px 0;text-align:center">${escapeSvgText(tr('duelEmptyBars'))}</div>`;
+    trendSvg.innerHTML = `<text x="290" y="50" text-anchor="middle" fill="var(--fg-3)" font-size="11">${escapeSvgText(tr('duelEmptyTrend'))}</text>`;
     if (trendMedianEl) trendMedianEl.textContent = 'n = 0';
     return;
   }
@@ -218,6 +253,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   barsContainer.innerHTML = sorted.map(item => {
     const key = item.modelExactId || item.key || item.modelLabel;
     const label = item.modelLabel || item.label || key;
+    const safeCount = Math.max(0, Math.trunc(Number(item.count) || 0));
     const rawVal = getMetricValue(item);
     const pct = Math.max(6, Math.min(100, (rawVal / maxMetric) * 100));
     const formatted = metric === 'tps'
@@ -227,7 +263,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     return `
       <div data-duel-model="${escapeSvgText(key)}" style="cursor:pointer;padding:3px 5px;border-radius:7px;${isSel ? 'background:var(--pill-bg)' : ''}">
         <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:4px">
-          <span style="font-weight:600">${escapeSvgText(label)} <small style="color:var(--fg-3);font-weight:400">(n=${item.count || 0})</small></span>
+          <span style="font-weight:600">${escapeSvgText(label)} <small style="color:var(--fg-3);font-weight:400">(n=${safeCount})</small></span>
           <span class="mono" style="color:var(--accent-2)">${formatted}</span>
         </div>
         <div class="thin-bar"><i style="width:${pct.toFixed(1)}%;background:linear-gradient(90deg,var(--accent),var(--accent-2))"></i></div>
@@ -248,11 +284,16 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
 
   const focusLabel = focusItem.modelLabel || focusItem.label || '';
   const samples = Array.isArray(focusItem?.samples) ? focusItem.samples.slice(-16) : [];
+  const safeFocusCount = Math.max(0, Math.trunc(Number(focusItem.count) || samples.length));
   if (trendTitleEl) {
-    trendTitleEl.textContent = `${focusLabel} 近 ${samples.length} 轮实测曲线`;
+    trendTitleEl.textContent = tr('duelTrendCurveTitle', { model: focusLabel, count: samples.length });
   }
   if (trendMedianEl) {
-    trendMedianEl.textContent = `中位数 ${Number(focusItem.medianTps || 0).toFixed(1)} tok/s · TTFT ${focusItem.medianTtft != null ? focusItem.medianTtft + 's' : '--'} · n=${focusItem.count || samples.length}`;
+    trendMedianEl.textContent = tr('duelTrendMedianFmt', {
+      tps: Number(focusItem.medianTps || 0).toFixed(1),
+      ttft: focusItem.medianTtft != null ? `${focusItem.medianTtft}s` : '--',
+      count: safeFocusCount
+    });
   }
 
   const sampleMetric = (s) => {
@@ -262,7 +303,13 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   };
 
   if (samples.length < 2) {
-    const singleVal = samples[0] ? `${Number(samples[0].tps || 0).toFixed(1)} tok/s` : '--';
+    let singleVal = '--';
+    if (samples[0]) {
+      const mVal = sampleMetric(samples[0]);
+      singleVal = metric === 'tps'
+        ? `${mVal.toFixed(1)} tok/s`
+        : (mVal > 0 ? `${mVal.toFixed(2)}s` : '--');
+    }
     trendSvg.innerHTML = `<circle cx="290" cy="44" r="4" fill="var(--accent-2)"></circle><text x="290" y="70" text-anchor="middle" fill="var(--fg-2)" font-size="11" font-family="var(--font-mono)">${escapeSvgText(singleVal)}</text>`;
     return;
   }

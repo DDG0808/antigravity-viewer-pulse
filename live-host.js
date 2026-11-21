@@ -13,6 +13,7 @@ const {
   checkUpdateAsync,
   applyUpdateAsync,
   recordModelCalls,
+  recordModelCallsAsync,
   getPluginSettings,
   savePluginSettings,
   launchCliSession,
@@ -206,7 +207,9 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
             res.end(JSON.stringify({ ok: false, error: `单次入账记录数超出上限（最多 ${MAX_RECORD_CALLS} 条）` }));
             return;
           }
-          const resCall = recordModelCalls(calls);
+          const resCall = typeof recordModelCallsAsync === 'function'
+            ? await recordModelCallsAsync(calls)
+            : recordModelCalls(calls);
           if (resCall && typeof resCall === 'object' && resCall.ok === false) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
@@ -236,7 +239,15 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
           return;
         }
         if (req.url === '/launch-cli') {
-          const result = await launchCliSession(request);
+          const safeCliReq = {};
+          if (request && typeof request === 'object') {
+            if (typeof request.model === 'string') safeCliReq.model = request.model;
+            if (typeof request.cascadeId === 'string') safeCliReq.cascadeId = request.cascadeId;
+            if (typeof request.conversationId === 'string') safeCliReq.conversationId = request.conversationId;
+            if (typeof request.workspacePath === 'string') safeCliReq.workspacePath = request.workspacePath;
+            if (request.dryRun === true) safeCliReq.dryRun = true;
+          }
+          const result = await launchCliSession(safeCliReq);
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;
