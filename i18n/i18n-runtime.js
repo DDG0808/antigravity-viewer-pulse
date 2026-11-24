@@ -247,10 +247,10 @@
 
   function shouldIgnoreElement(el) {
     if (!el || el.nodeType !== 1) return false;
-    if (el.id === 'context-meter-root') return true;
+    if (el.id === 'context-meter-root' || el.id === 'ag-context-meter') return true;
     if (IGNORED_TAGS[el.tagName]) return true;
     if (el.isContentEditable) return true;
-    if (el.closest && el.closest('#context-meter-root')) return true;
+    if (el.closest && el.closest('#context-meter-root, #ag-context-meter')) return true;
 
     // 模型选择器相关边界元素及其子元素保持英文原样（纯属性 O(1) 短路）
     if (isModelSelectorBoundary(el)) return true;
@@ -765,7 +765,7 @@
     // 低频保底扫描：彻底阻断 50~60Hz 无限自旋死循环，改为每 15 秒配合 requestIdleCallback 执行一次低频保底扫描
     var idleScanScheduled = false;
     function scheduleIdleScan() {
-      if (!i18nEnabled && getBrandTitleMode() === 'english') return;
+      if ((!i18nEnabled && getBrandTitleMode() === 'english') || (doc && doc.hidden)) return;
       if (idleScanScheduled) return;
       if (root.requestIdleCallback) {
         idleScanScheduled = true;
@@ -851,7 +851,8 @@
       var hoverScanTimer = null;
 
       function scanFloatingContainers() {
-        if (!doc || !doc.body) return;
+        if (!doc || !doc.body || doc.hidden) return;
+        if (!i18nEnabled && getBrandTitleMode() === 'english') return;
         disconnectObserver();
         try {
           // 定向扫描顶层 Portal 容器、Tooltip、Popover 节点，门禁拦截非浮层元素，绝不遍历整棵 DOM 树
@@ -873,6 +874,7 @@
       }
 
       var onHoverAction = function (e) {
+        if ((!i18nEnabled && getBrandTitleMode() === 'english') || (doc && doc.hidden)) return;
         // 120ms 节流阀：阻断高频事件风暴，杜绝掉帧卡顿
         var now = Date.now ? Date.now() : (+new Date());
         if (now - lastHoverTime < 120) return;

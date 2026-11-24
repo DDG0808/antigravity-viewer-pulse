@@ -42,7 +42,10 @@ function drawStreamWaveform(canvas, hostEl, points, isStreaming = false) {
   const dpr = (typeof globalThis !== 'undefined' && globalThis.devicePixelRatio) ? Math.min(globalThis.devicePixelRatio, 3) : 2;
   let w = 268;
   try {
-    if (typeof canvas.getBoundingClientRect === 'function') {
+    // 优先读取 clientWidth 避免高频流式刷新触发强制同步布局，缺失时再回退 getBoundingClientRect
+    if (Number.isFinite(canvas.clientWidth) && canvas.clientWidth >= 120) {
+      w = Math.round(canvas.clientWidth);
+    } else if (typeof canvas.getBoundingClientRect === 'function') {
       const rect = canvas.getBoundingClientRect();
       if (rect && Number.isFinite(rect.width) && rect.width >= 120) {
         w = Math.round(rect.width);
@@ -184,17 +187,39 @@ function renderAlternateHistorySvg(svgEl, mode, buckets, onHoverBucket, lang = '
     const maxCum = Math.max(1, running);
     const padX = 16;
     const w = 568;
-    const stepX = cumRows.length > 1 ? w / (cumRows.length - 1) : 0;
-    const pts = cumRows.map((r, idx) => {
-      const x = (padX + idx * stepX).toFixed(1);
-      const y = (96 - (r.cumTotal / maxCum) * 78).toFixed(1);
-      return `${x},${y}`;
+    const isSingle = cumRows.length === 1;
+    const stepX = !isSingle ? w / (cumRows.length - 1) : 0;
+    const coords = cumRows.map((r, idx) => {
+      const x = isSingle ? (padX + w / 2) : (padX + idx * stepX);
+      const y = 96 - (r.cumTotal / maxCum) * 78;
+      return { x, y, r };
     });
+    const pts = isSingle
+      ? [`${padX},${coords[0].y.toFixed(1)}`, `${(padX + w).toFixed(1)},${coords[0].y.toFixed(1)}`]
+      : coords.map(c => `${c.x.toFixed(1)},${c.y.toFixed(1)}`);
     const firstX = padX;
-    const lastX = (padX + (cumRows.length - 1) * stepX).toFixed(1);
+    const lastX = (padX + w).toFixed(1);
+    const hitW = Math.max(8, w / Math.max(1, cumRows.length));
+    const hitZones = coords.map((c, i) => {
+      const hx = Math.max(0, c.x - hitW / 2).toFixed(1);
+      return `<rect data-cidx="${i}" x="${hx}" y="8" width="${hitW.toFixed(1)}" height="96" fill="transparent" style="cursor:pointer"></rect>`;
+    }).join('');
+    const singleDot = isSingle
+      ? `<circle cx="${coords[0].x.toFixed(1)}" cy="${coords[0].y.toFixed(1)}" r="4" fill="var(--accent)"></circle>`
+      : '';
     svgEl.innerHTML =
       `<polygon points="${firstX},102 ${pts.join(' ')} ${lastX},102" fill="var(--accent-glow)"></polygon>` +
-      `<polyline points="${pts.join(' ')}" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></polyline>`;
+      `<polyline points="${pts.join(' ')}" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></polyline>` +
+      singleDot +
+      hitZones;
+    if (typeof onHoverBucket === 'function') {
+      svgEl.querySelectorAll('rect[data-cidx]').forEach(rect => {
+        rect.addEventListener('mouseenter', () => {
+          const item = cumRows[Number(rect.getAttribute('data-cidx'))];
+          if (item) onHoverBucket({ ...item, total: item.cumTotal });
+        });
+      });
+    }
     return;
   }
 
@@ -247,6 +272,14 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     const vb = getMetricValue(b) || 9999;
     return va - vb;
   }).slice(0, 8);
+
+  if (!sorted.length) {
+    barsContainer.innerHTML = `<div style="font-size:11.5px;color:var(--fg-3);padding:16px 0;text-align:center">${escapeSvgText(tr('duelEmptyBars'))}</div>`;
+    trendSvg.innerHTML = `<text x="290" y="50" text-anchor="middle" fill="var(--fg-3)" font-size="11">${escapeSvgText(tr('duelEmptyTrend'))}</text>`;
+    if (trendTitleEl) trendTitleEl.textContent = '--';
+    if (trendMedianEl) trendMedianEl.textContent = 'n = 0';
+    return;
+  }
 
   const maxMetric = Math.max(0.1, ...sorted.map(item => getMetricValue(item)));
 
@@ -302,19 +335,17 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     return Number(s.durationSec ?? s.dur ?? 0);
   };
 
-  if (samples.length < 2) {
-    let singleVal = '--';
-    if (samples[0]) {
-      const mVal = sampleMetric(samples[0]);
-      singleVal = metric === 'tps'
-        ? `${mVal.toFixed(1)} tok/s`
-        : (mVal > 0 ? `${mVal.toFixed(2)}s` : '--');
-    }
+  // 过滤缺失该指标的样本（例如无 TTFT 计时字段的轮次），避免在折线图上画成 0.00s 假尖峰
+  const validVals = samples.map(sampleMetric).filter(v => Number.isFinite(v) && v > 0);
+  if (validVals.length < 2) {
+    const singleVal = validVals.length === 1
+      ? (metric === 'tps' ? `${validVals[0].toFixed(1)} tok/s` : `${validVals[0].toFixed(2)}s`)
+      : '--';
     trendSvg.innerHTML = `<circle cx="290" cy="44" r="4" fill="var(--accent-2)"></circle><text x="290" y="70" text-anchor="middle" fill="var(--fg-2)" font-size="11" font-family="var(--font-mono)">${escapeSvgText(singleVal)}</text>`;
     return;
   }
 
-  const vals = samples.map(sampleMetric);
+  const vals = validVals;
   const minV = Math.min(...vals);
   const maxV = Math.max(minV + 0.1, ...vals);
   const stepX = 540 / (vals.length - 1);

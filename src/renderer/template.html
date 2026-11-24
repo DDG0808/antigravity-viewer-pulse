@@ -1,6 +1,6 @@
 <!-- Antigravity Pulse — Spatial Bento HUD Shadow DOM Template -->
 <div class="island-anchor" id="islandAnchor">
-  <div class="dynamic-island" id="dynamicIsland" data-state="normal" role="button" tabindex="0" aria-label="Antigravity Pulse">
+  <div class="dynamic-island" id="dynamicIsland" data-state="normal" role="button" tabindex="0" aria-label="Antigravity Pulse" title="Antigravity Pulse (Alt+Shift+P)">
     <svg class="concentric-dial" viewBox="0 0 20 20" aria-hidden="true">
       <circle cx="10" cy="10" r="7.5" fill="none" stroke="var(--track)" stroke-width="2"></circle>
       <circle id="dialCtx" cx="10" cy="10" r="7.5" fill="none" stroke="var(--accent)" stroke-width="2"
@@ -79,7 +79,7 @@
       <button class="rail-mini-btn" id="btnToggleDock" type="button" title="切换悬浮玻璃窗 / 右侧贴边抽屉">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
       </button>
-      <button class="rail-mini-btn" id="btnHideHud" type="button" title="收起面板 (Esc)">
+      <button class="rail-mini-btn" id="btnHideHud" type="button" title="收起面板 (Esc / Alt+Shift+P)">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
@@ -96,6 +96,9 @@
       <div class="header-tools">
         <button class="restart-pill" id="btnRestartBanner" type="button" hidden>
           <span>↻</span><span data-i18n="restartNow">重启生效</span>
+        </button>
+        <button class="snap-pill-btn" id="btnCopySnapshot" type="button" title="一键复制当前会话遥测 Markdown 摘要 (Alt+Shift+P 呼出面板)">
+          <span data-i18n="copySnapBtn">复制摘要</span>
         </button>
         <div class="seg-bar" id="panelLangSeg">
           <button class="seg-item on" type="button" data-plang="zh-CN">简</button>
@@ -375,6 +378,8 @@
             <span class="mono" style="font-size:10.5px;color:var(--fg-2)" id="hmPeriodLbl">近 52 周</span>
             <button class="nav-step-btn" id="btnHmNext" type="button" title="下一周期">›</button>
             <button class="ghost-link" id="btnRefreshHistory" type="button" title="刷新历史账本">↻</button>
+            <button class="mini-export-btn mono" id="btnExportCsv" type="button" title="导出账本为 CSV 表格">CSV</button>
+            <button class="mini-export-btn mono" id="btnExportJson" type="button" title="导出账本为 JSON 快照">JSON</button>
           </div>
 
           <div style="display:flex;gap:5px;align-items:center">
@@ -388,12 +393,14 @@
             <div class="seg-bar" id="ledgerBottomToggle">
               <button class="seg-item on" type="button" data-lbot="sum" data-i18n="botSummary">周期</button>
               <button class="seg-item" type="button" data-lbot="api" data-i18n="botApi">计价</button>
+              <button class="seg-item" type="button" data-lbot="models" data-i18n="botModels">排行</button>
             </div>
           </div>
         </div>
 
         <div id="hmDailyWrap" class="heat-matrix"></div>
         <svg id="hmAltSvg" viewBox="0 0 600 108" width="100%" height="108" style="display:none;flex:1"></svg>
+        <div id="ledgerModelsPanel" class="model-rank-panel" style="display:none"></div>
 
         <div id="ledgerSumStrip" style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px solid var(--line);font-size:10.5px;gap:8px">
           <span class="mono" style="color:var(--fg-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="hmHoverTxt">悬停色块查看当日输入 / 缓存 / 输出与美元折算</span>
@@ -467,6 +474,13 @@
             <input class="clean-field mono" id="proxyUrlInput" type="text" placeholder="http://localhost:7897" style="flex:1;min-width:0" aria-label="本地代理地址" />
             <button class="action-btn" id="btnPingTopo" type="button" data-i18n="diag4Layer">四层诊断</button>
           </div>
+
+          <div class="proxy-profile-bar" id="proxyProfileBar"></div>
+          <div class="proxy-profile-editor" id="proxyProfileEditor" hidden>
+            <input class="clean-field" id="proxyProfileNameInput" type="text" maxlength="32" placeholder="预设名称 (如 Clash / 住宅节点)" style="flex:1;min-width:0;height:24px;font-size:10.5px" />
+            <button class="action-btn primary" id="btnConfirmSaveProfile" type="button" style="height:24px;padding:0 9px;font-size:10px" data-i18n="saveProfileConfirm">保存</button>
+            <button class="action-btn" id="btnCancelSaveProfile" type="button" style="height:24px;padding:0 8px;font-size:10px" data-i18n="cancelBtn">取消</button>
+          </div>
         </div>
 
         <!-- 左下：桌面壳层汉化、品牌词热同步与服务控制 -->
@@ -526,9 +540,12 @@
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
         <div>
           <div style="font-size:14px;font-weight:650" data-i18n="auditSheetTitle">会话缓存总览与最近一次请求对账</div>
-          <div style="font-size:10.5px;color:var(--fg-2)" data-i18n="auditSheetSub">先看整个会话累计缓存复用效率，再向下核对最近一次模型请求与本地附件</div>
+          <div style="font-size:10.5px;color:var(--fg-2)" data-i18n="auditSheetSub">先看整个会话累计缓存复用效率，再向下核对最近一次模型请求、自动压缩时间线与附件</div>
         </div>
-        <button class="action-btn" type="button" data-close-sheet="auditSheet" data-i18n="backToCockpit">返回驾驶舱</button>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="action-btn" id="btnCopyAuditSnap" type="button" data-i18n="copySnapBtn">复制摘要</button>
+          <button class="action-btn" type="button" data-close-sheet="auditSheet" data-i18n="backToCockpit">返回驾驶舱</button>
+        </div>
       </div>
 
       <!-- 第一层：整个会话累计缓存总览横幅 -->
@@ -538,6 +555,7 @@
             <span style="font-size:11.5px;font-weight:600;color:var(--fg-1)" data-i18n="audSessTitle">整段会话缓存命中率</span>
             <strong class="mono" style="font-size:17px;font-weight:700;color:var(--emerald)" id="audSessCachePct">--%</strong>
             <span class="tag neutral mono" id="audSessTurnTag">0 轮请求</span>
+            <span class="tag warn mono" id="audCompactionTag" hidden>压缩 0 次</span>
           </div>
           <div class="mono" style="font-size:11.5px;font-weight:600;color:var(--emerald);white-space:nowrap" id="audSessSavedBadge">累计省 $0.00</div>
         </div>
@@ -548,7 +566,7 @@
         </div>
       </div>
 
-      <!-- 第二层：最近一次模型请求 vs 归档附件明细 -->
+      <!-- 第二层：最近一次模型请求 vs 轮次压缩时间线 / 归档附件明细 -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:11px;flex:1;min-height:0">
         <div class="scrubber-box" style="display:flex;flex-direction:column;justify-content:space-between;gap:6px">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
@@ -568,11 +586,17 @@
         </div>
 
         <div class="scrubber-box" style="display:flex;flex-direction:column;justify-content:space-between;gap:8px;min-height:0">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:11.5px;font-weight:600;color:var(--violet)" data-i18n="audAttachTitle">归档累计与附件明细</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+            <div class="seg-bar" id="audRightSeg">
+              <button class="seg-item on" type="button" data-aright="timeline" data-i18n="audTimelineTab">轮次时间线</button>
+              <button class="seg-item" type="button" data-aright="files" data-i18n="audAttachTab">附件明细</button>
+            </div>
             <span class="mono" style="font-size:10px;color:var(--fg-3)" id="audStepStats">0 步</span>
           </div>
-          <div class="file-audit-list" id="auditFileList">
+          <div class="turn-timeline-list" id="auditTimelineList">
+            <div style="font-size:11px;color:var(--fg-3);padding:12px 0;text-align:center">完成首次模型响应后自动绘制轮次压缩与缓存波动轨迹</div>
+          </div>
+          <div class="file-audit-list" id="auditFileList" style="display:none">
             <div style="font-size:11px;color:var(--fg-3);padding:12px 0;text-align:center">当前会话暂无外部附件或尚未完成扫描</div>
           </div>
           <button class="action-btn primary" id="btnSheetRescan" type="button" data-i18n="btnRescanTxt">↻ 重新扫描整段归档与附件</button>

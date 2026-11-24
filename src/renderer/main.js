@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const METER_VERSION = '0.9.1';
+  const METER_VERSION = '0.10.0';
   const LOOPBACK_HOST = [127, 0, 0, 1].join('.');
 
   // 仅允许在本地回环页面、受控桌面协议或无 location 测试沙箱中挂载，阻止第三方外部页面加载 HUD
@@ -75,6 +75,13 @@
     scan: null,
     scanBusy: false,
     requestBusy: false,
+    activeRequestToken: 0,
+    activeRequestCtrl: null,
+    requestStartedAt: 0,
+    activeScanToken: 0,
+    activeScanCtrl: null,
+    scanStartedAt: 0,
+    liveCsrfToken: '',
     requestError: '',
     scanError: '',
     requestAt: 0,
@@ -119,6 +126,8 @@
     conversationBindings: {},
     lastInjectedLimit: null,
     lastInjectedMode: null,
+    lastInjectedDispatchId: null,
+    lastInjectedFailed: false,
     lastAdoptedLimit: null,
     injectedByProduct: new Map(),
     adoptedByProduct: new Map(),
@@ -143,7 +152,11 @@
     zhChatTitle: false,
     proxyEnabled: false,
     proxyUrl: `http://${LOOPBACK_HOST}:7897`,
+    proxyProfiles: [],
+    activeProxyProfileId: null,
+    proxyProfileEditorOpen: false,
     proxyDiag: { configValid: null, proxyReachable: null, internetReachable: null, modelCallVerified: null },
+    auditRightTab: 'timeline',
     shellLanguage: 'en',
     brandTitle: 'english',
     latestRelease: null,
@@ -187,12 +200,148 @@
     return translatePulseKey(state.panelLang, key, vars);
   }
 
+  /**
+   * 跨环境剪贴板写入：优先 Clipboard API，降级至隐藏 textarea + execCommand，兼容受限 Electron 渲染进程
+   */
+  async function copyTextToClipboard(text) {
+    const str = String(text ?? '');
+    if (!str) return false;
+    try {
+      if (globalThis.navigator?.clipboard && typeof globalThis.navigator.clipboard.writeText === 'function') {
+        await globalThis.navigator.clipboard.writeText(str);
+        return true;
+      }
+    } catch {}
+    try {
+      if (document && typeof document.createElement === 'function' && document.body && typeof document.execCommand === 'function') {
+        const ta = document.createElement('textarea');
+        ta.value = str;
+        ta.setAttribute('readonly', 'true');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        ta.style.pointerEvents = 'none';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = Boolean(document.execCommand('copy'));
+        ta.remove();
+        return ok;
+      }
+    } catch {}
+    return false;
+  }
+
   // ==================== Dual-Transport Backend Bridge ====================
   // 在全局单例上固化原始传输层引用，防止多次热重载叠加包装链
   if (!globalThis.__agOrigFetch && typeof globalThis.fetch === 'function') {
     globalThis.__agOrigFetch = globalThis.fetch.bind(globalThis);
   }
   const origFetch = globalThis.__agOrigFetch || (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null);
+
+  // ==================== Live CSRF Sniffing & Self-Healing ====================
+  let csrfRefreshPromise = null;
+
+  function captureCsrfToken(raw) {
+    const val = typeof raw === 'string' ? raw.trim() : '';
+    if (!val || val.length > 512) return;
+    state.liveCsrfToken = val;
+    try {
+      if (globalThis.__APP_CONFIG__ && typeof globalThis.__APP_CONFIG__ === 'object') {
+        globalThis.__APP_CONFIG__.csrfToken = val;
+      }
+    } catch {}
+  }
+
+  function getActiveCsrfToken() {
+    return String(state.liveCsrfToken || globalThis.__APP_CONFIG__?.csrfToken || '').trim();
+  }
+
+  function extractHeaderCI(hdrs, targetLower) {
+    if (!hdrs) return '';
+    if (typeof hdrs.get === 'function') return String(hdrs.get(targetLower) || '');
+    if (Array.isArray(hdrs)) {
+      for (const pair of hdrs) {
+        if (Array.isArray(pair) && String(pair[0] || '').toLowerCase() === targetLower) {
+          return String(pair[1] || '');
+        }
+      }
+      return '';
+    }
+    for (const [k, v] of Object.entries(hdrs)) {
+      if (String(k).toLowerCase() === targetLower) return String(v || '');
+    }
+    return '';
+  }
+
+  function extractCsrfFromHtmlSafe(html) {
+    const src = String(html || '');
+    const anchor = src.match(/window\.__APP_CONFIG__\s*=\s*/);
+    if (anchor && typeof anchor.index === 'number') {
+      const startIdx = src.indexOf('{', anchor.index + anchor[0].length);
+      if (startIdx >= 0) {
+        let depth = 0;
+        let inStr = false;
+        let escaped = false;
+        for (let i = startIdx; i < src.length; i++) {
+          const ch = src[i];
+          if (inStr) {
+            if (escaped) escaped = false;
+            else if (ch === '\\') escaped = true;
+            else if (ch === '"') inStr = false;
+            continue;
+          }
+          if (ch === '"') { inStr = true; continue; }
+          if (ch === '{') depth += 1;
+          else if (ch === '}') {
+            depth -= 1;
+            if (depth === 0) {
+              try {
+                const parsed = JSON.parse(src.slice(startIdx, i + 1));
+                if (parsed?.csrfToken) return String(parsed.csrfToken).trim();
+              } catch {}
+              break;
+            }
+          }
+        }
+      }
+    }
+    const m = src.match(/window\.__APP_CONFIG__\s*=\s*(\{[\s\S]*?\})\s*;/);
+    if (m) {
+      try {
+        const parsed = JSON.parse(m[1]);
+        if (parsed?.csrfToken) return String(parsed.csrfToken).trim();
+      } catch {}
+    }
+    return '';
+  }
+
+  /**
+   * 当语言服务重启、休眠唤醒或令牌轮换导致 401/403 时，同源重拉首页提取最新 CSRF 令牌（单飞去重）
+   */
+  async function refreshCsrfTokenFromHost(signal = null) {
+    if (!origFetch || state.disposed) return '';
+    if (csrfRefreshPromise) return csrfRefreshPromise;
+    csrfRefreshPromise = (async () => {
+      try {
+        const r = await origFetch('/', {
+          method: 'GET',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          ...(signal ? { signal } : {})
+        });
+        if (!r || !r.ok) return '';
+        const html = typeof r.text === 'function' ? await r.text() : '';
+        const fresh = extractCsrfFromHtmlSafe(html);
+        if (fresh) {
+          captureCsrfToken(fresh);
+          return fresh;
+        }
+      } catch {}
+      return '';
+    })().finally(() => {
+      csrfRefreshPromise = null;
+    });
+    return csrfRefreshPromise;
+  }
 
   function getLiveBridge() {
     const b = globalThis.__AGContextMeterLive;
@@ -314,7 +463,10 @@
       const rect = pill.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
         const topPx = Math.max(36, Math.round(rect.bottom + 8));
-        const rightPx = Math.max(10, Math.min(vw - 320, Math.round(vw - rect.right)));
+        // 按实际弹窗宽度（692px 或视口留白）反算右偏移上限，防止窄窗口下浮层溢出左边界
+        const hudW = Math.min(692, vw - 20);
+        const maxRightPx = Math.max(10, vw - hudW - 10);
+        const rightPx = Math.max(10, Math.min(maxRightPx, Math.round(vw - rect.right)));
         host.style.setProperty('--hud-top', `${topPx}px`);
         host.style.setProperty('--hud-right', `${rightPx}px`);
       }
@@ -636,14 +788,25 @@
   function isBinaryDynamicUnlocked() {
     const u = state.unlockStatus;
     if (!u || !isBinaryUnlockSupportedOnHost()) return false;
-    if (u.status === 'not_patched') return false;
+    if (typeof budgetEngine.resolveRuntimeUnlockPolicy === 'function') {
+      const policy = budgetEngine.resolveRuntimeUnlockPolicy(u);
+      return Boolean(policy && policy.mode === 'dynamic' && policy.pendingRestart !== true);
+    }
+    if (u.status === 'not_patched' || u.status === 'patched_pending_restart' || u.status === 'partial_match' || u.status === 'failed') return false;
     return Boolean(u.configuredMode === 'dynamic' || u.unlocked === true || u.status === 'unlocked');
   }
 
   function isBinaryUnlocked() {
     const u = state.unlockStatus;
     if (!u || !isBinaryUnlockSupportedOnHost()) return false;
-    if (u.status === 'not_patched') return false;
+    if (u.status === 'not_patched' || u.status === 'partial_match' || u.status === 'failed') return false;
+    if (typeof budgetEngine.resolveRuntimeUnlockPolicy === 'function') {
+      const policy = budgetEngine.resolveRuntimeUnlockPolicy(u);
+      if (policy && policy.pendingRestart !== true) {
+        if (policy.mode === 'dynamic') return true;
+        if (policy.mode === 'fixed' && Number(policy.limitTokens) > 256000) return true;
+      }
+    }
     return Boolean(
       u.unlocked ||
       u.patched ||
@@ -846,6 +1009,8 @@
       : (tx.sentMode === 'dynamic' ? targetLimit : 256000);
     state.lastInjectedMode = tx.sentMode;
     state.lastInjectedLimit = effLimit;
+    state.lastInjectedDispatchId = dispatchId;
+    state.lastInjectedFailed = false;
     if (prodKey) {
       state.injectedByProduct.set(prodKey, {
         dispatchId,
@@ -877,14 +1042,15 @@
         scopeMode: 'unified',
         unifiedPreference: { mode: 'default', limitTokens: null }
       });
-      if (probe && probe.cascadeId && lastDecoratorDispatch.cascadeId && probe.cascadeId !== lastDecoratorDispatch.cascadeId) {
+      // 仅当该帧确认为 SendUserCascadeMessage 请求（probe.handled === true）且会话一致时才消费去重标记，避免无关 WS 心跳帧误清空标记
+      if (!probe || probe.handled !== true) return false;
+      if (probe.cascadeId && lastDecoratorDispatch.cascadeId && probe.cascadeId !== lastDecoratorDispatch.cascadeId) {
         return false;
       }
       lastDecoratorDispatch = null;
       return true;
     } catch {
-      lastDecoratorDispatch = null;
-      return true;
+      return false;
     }
   }
 
@@ -903,6 +1069,20 @@
       }
     } catch {}
     return bodyInit;
+  }
+
+  function extractContentTypeHeader(hdrs) {
+    if (!hdrs) return '';
+    if (typeof hdrs.get === 'function') return hdrs.get('content-type') || '';
+    if (Array.isArray(hdrs)) {
+      for (const pair of hdrs) {
+        if (Array.isArray(pair) && String(pair[0] || '').toLowerCase() === 'content-type') {
+          return String(pair[1] || '');
+        }
+      }
+      return '';
+    }
+    return hdrs['content-type'] || hdrs['Content-Type'] || '';
   }
 
   function installRequestInterceptor() {
@@ -930,6 +1110,9 @@
         if (!info || info.ok !== false) return;
         const failedId = info.dispatchId || null;
         if (failedId) {
+          if (state.lastInjectedDispatchId === failedId) {
+            state.lastInjectedFailed = true;
+          }
           for (const [pk, rec] of state.injectedByProduct.entries()) {
             if (rec && rec.dispatchId === failedId) {
               state.injectedByProduct.set(pk, { ...rec, failed: true });
@@ -941,19 +1124,24 @@
 
       if (origFetch) {
         globalThis.fetch = async function (input, init) {
-          const urlStr = typeof input === 'string' ? input : (input?.url || '');
+          // 被动嗅探宿主自身发出的最新 CSRF 令牌，无需额外请求即可与宿主保持同步
+          try {
+            const sniffed = extractHeaderCI(init?.headers, 'x-codeium-csrf-token') ||
+              (input && typeof input === 'object' ? extractHeaderCI(input.headers, 'x-codeium-csrf-token') : '');
+            if (sniffed) captureCsrfToken(sniffed);
+          } catch {}
+          const urlStr = typeof input === 'string'
+            ? input
+            : (typeof URL !== 'undefined' && input instanceof URL ? input.href : (input?.url || ''));
           const isSendRpc = (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) ||
             urlStr.includes('SendUserCascadeMessage');
           if (isSendRpc) {
             if (init && init.body) {
-              const hdrs = init.headers;
-              const ct = typeof hdrs?.get === 'function'
-                ? (hdrs.get('content-type') || '')
-                : (hdrs?.['content-type'] || hdrs?.['Content-Type'] || '');
+              const ct = extractContentTypeHeader(init.headers);
               init = { ...init, body: tryRewriteSendBody(init.body, 'fetch', urlStr, ct) };
             } else if (input && typeof input === 'object' && typeof input.clone === 'function' && typeof input.arrayBuffer === 'function') {
               try {
-                const ct = typeof input.headers?.get === 'function' ? (input.headers.get('content-type') || '') : '';
+                const ct = extractContentTypeHeader(input.headers);
                 const rawBytes = new Uint8Array(await input.clone().arrayBuffer());
                 if (rawBytes.length > 0) {
                   const nextBytes = tryRewriteSendBody(rawBytes, 'fetch', urlStr, ct);
@@ -974,7 +1162,19 @@
         }
         const rawWsSend = globalThis.__agOrigWsSend;
         globalThis.WebSocket.prototype.send = function (data) {
-          const next = tryRewriteSendBody(data, 'ws_frame', this?.url || '');
+          // 快速预筛：跳过无关文本帧（心跳/LSP）与过短二进制帧，避免高频 WS 通信触发 DOM 查询与重解析
+          let shouldInspect = false;
+          if (typeof data === 'string') {
+            shouldInspect = data.includes('SendUserCascadeMessage') ||
+              data.includes('cascadeConfig') ||
+              data.includes('checkpointConfig') ||
+              data.includes('cascadeId');
+          } else if (data instanceof ArrayBuffer) {
+            shouldInspect = data.byteLength >= 16;
+          } else if (ArrayBuffer.isView(data)) {
+            shouldInspect = data.byteLength >= 16;
+          }
+          const next = shouldInspect ? tryRewriteSendBody(data, 'ws_frame', this?.url || '') : data;
           return rawWsSend.call(this, next);
         };
       }
@@ -995,8 +1195,11 @@
         };
         if (rawXhrSetHeader) {
           globalThis.XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
-            if (String(name || '').toLowerCase() === 'content-type') {
+            const lowerName = String(name || '').toLowerCase();
+            if (lowerName === 'content-type') {
               this.__pulseCt = String(value || '');
+            } else if (lowerName === 'x-codeium-csrf-token' && value) {
+              captureCsrfToken(String(value));
             }
             return rawXhrSetHeader.call(this, name, value);
           };
@@ -1292,18 +1495,26 @@
 
   async function pollTrajectory(gen, id) {
     if (!origFetch || state.disposed || !id) return;
-    const csrf = globalThis.__APP_CONFIG__?.csrfToken;
-    if (!csrf) return;
-    state.requestBusy = true;
+    const myToken = ++state.activeRequestToken;
     const ctrl = new AbortController();
+    state.requestBusy = true;
+    state.requestStartedAt = Date.now();
+    state.activeRequestCtrl = ctrl;
     controllers.add(ctrl);
-    const tid = setTimeout(() => ctrl.abort(), 10000);
+    const tid = setTimeout(() => ctrl.abort(), 12000);
     try {
+      let csrf = getActiveCsrfToken();
+      if (!csrf) {
+        csrf = await refreshCsrfTokenFromHost(ctrl.signal);
+      }
+      if (!csrf || gen !== state.generation || state.disposed) return;
+
       // On initial load of a conversation, fetch full metadata (offset 0) so we get ALL session calls & speed telemetry!
       let offset = state.sessionCallsMap.size === 0 ? 0 : Math.max(0, state.count - 6);
-      const fetchWithOffset = async (off) => {
+      const fetchWithOffset = async (off, allowRetryAuth = true) => {
         const r = await origFetch('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata', {
           method: 'POST',
+          credentials: 'same-origin',
           headers: {
             'Content-Type': 'application/json',
             'Connect-Protocol-Version': '1',
@@ -1312,6 +1523,13 @@
           body: JSON.stringify({ cascadeId: id, generatorMetadataOffset: off, includeMessages: false }),
           signal: ctrl.signal
         });
+        if ((r.status === 401 || r.status === 403) && allowRetryAuth && !ctrl.signal.aborted) {
+          const fresh = await refreshCsrfTokenFromHost(ctrl.signal);
+          if (fresh) {
+            csrf = fresh;
+            return fetchWithOffset(off, false);
+          }
+        }
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return await r.json();
       };
@@ -1387,7 +1605,8 @@
 
       let latestSummary = null;
       let latestSpeedSummary = null;
-      let prevCtx = null;
+      // 增量拉取尾部轨迹时沿用上一轮有效上下文，防止尾部刚好是报错/重试帧时丢失已有 actual/budget
+      let prevCtx = offset > 0 ? state.latest : null;
 
       for (let i = 0; i < rows.length; i++) {
         const s = typeof core.summarize === 'function'
@@ -1427,8 +1646,13 @@
     } finally {
       clearTimeout(tid);
       controllers.delete(ctrl);
-      if (gen === state.generation && !state.disposed) {
+      if (state.activeRequestCtrl === ctrl) state.activeRequestCtrl = null;
+      // 仅按当前请求令牌释放锁，彻底杜绝切换会话后旧请求漏释或误释新请求锁
+      if (state.activeRequestToken === myToken) {
         state.requestBusy = false;
+        state.requestStartedAt = 0;
+      }
+      if (gen === state.generation && !state.disposed) {
         state.requestNext = Date.now() + (document.hidden ? 12000 : (state.isStreaming ? 900 : 2200));
         renderCockpit();
         renderBudgetSpace();
@@ -1440,15 +1664,30 @@
 
   async function runSessionScan(gen, id, force = false) {
     if (state.disposed || !id || state.scanBusy) return;
+    const myToken = ++state.activeScanToken;
+    const scanCtrl = new AbortController();
     state.scanBusy = true;
+    state.scanStartedAt = Date.now();
+    state.activeScanCtrl = scanCtrl;
+    controllers.add(scanCtrl);
+    let scanTid = null;
     try {
-      const res = await callBackend({
+      const scanPromise = callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.scan === 'function'
           ? () => globalThis.contextMeterAPI.scan(id, force)
           : null,
         liveRoute: '/scan',
-        body: { id, force }
+        body: { id, force },
+        signal: scanCtrl.signal
       });
+      // 为 IPC/Live 归档扫描施加 35s 兜底超时，防止休眠唤醒导致挂起后 scanBusy 永久卡死
+      const timeoutPromise = new Promise((_, reject) => {
+        scanTid = setTimeout(() => {
+          try { scanCtrl.abort(); } catch {}
+          reject(new Error('归档扫描超时'));
+        }, 35000);
+      });
+      const res = await Promise.race([scanPromise, timeoutPromise]);
       if (gen !== state.generation || state.disposed) return;
       if (res?.ok && res.data) {
         state.scan = res.data;
@@ -1473,10 +1712,18 @@
         syncActiveModelIdentity();
       }
     } catch (e) {
-      state.scanError = e?.message || '';
-    } finally {
       if (gen === state.generation && !state.disposed) {
+        state.scanError = e?.message || '';
+      }
+    } finally {
+      clearTimeout(scanTid);
+      controllers.delete(scanCtrl);
+      if (state.activeScanCtrl === scanCtrl) state.activeScanCtrl = null;
+      if (state.activeScanToken === myToken) {
         state.scanBusy = false;
+        state.scanStartedAt = 0;
+      }
+      if (gen === state.generation && !state.disposed) {
         state.scanNext = Date.now() + (document.hidden ? 60000 : 22000);
         renderCockpit();
         renderAuditSheet();
@@ -1487,19 +1734,32 @@
 
   async function fetchAvailableModels() {
     if (!origFetch) return;
-    const csrf = globalThis.__APP_CONFIG__?.csrfToken;
+    let csrf = getActiveCsrfToken();
+    if (!csrf) csrf = await refreshCsrfTokenFromHost();
     if (!csrf) return;
     try {
-      const res = await origFetch('/exa.language_server_pb.LanguageServerService/GetAvailableModels', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Connect-Protocol-Version': '1',
-          'x-codeium-csrf-token': csrf
-        },
-        body: JSON.stringify({ forceRefresh: false })
-      });
-      if (!res.ok) return;
+      const doReq = async (allowRetry = true) => {
+        const res = await origFetch('/exa.language_server_pb.LanguageServerService/GetAvailableModels', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
+            'x-codeium-csrf-token': csrf
+          },
+          body: JSON.stringify({ forceRefresh: false })
+        });
+        if ((res.status === 401 || res.status === 403) && allowRetry) {
+          const fresh = await refreshCsrfTokenFromHost();
+          if (fresh) {
+            csrf = fresh;
+            return doReq(false);
+          }
+        }
+        return res;
+      };
+      const res = await doReq(true);
+      if (!res || !res.ok) return;
       const data = await res.json();
       const modelsObj = data?.response?.models || data?.models;
       if (!modelsObj || typeof modelsObj !== 'object') return;
@@ -1585,34 +1845,53 @@
   }
 
   async function fetchDirectQuotaRpcSupplement() {
-    if (!origFetch) return null;
-    const csrf = globalThis.__APP_CONFIG__?.csrfToken;
-    if (!csrf) return null;
-    const headers = {
-      'Content-Type': 'application/json',
-      'Connect-Protocol-Version': '1',
-      'x-codeium-csrf-token': csrf
-    };
-    const callRpc = async (method) => {
-      const r = await origFetch(`/exa.language_server_pb.LanguageServerService/${method}`, {
-        method: 'POST',
-        headers,
-        body: '{}'
-      });
-      if (!r || !r.ok) return null;
-      return await r.json();
-    };
-    const [uSet, qSet] = await Promise.allSettled([
-      callRpc('GetUserStatus'),
-      callRpc('RetrieveUserQuotaSummary')
-    ]);
-    const userStatusRes = uSet.status === 'fulfilled' ? uSet.value : null;
-    const quotaSummaryRes = qSet.status === 'fulfilled' ? qSet.value : null;
-    const hasGroups = Array.isArray(quotaSummaryRes?.response?.groups || quotaSummaryRes?.groups) &&
-      (quotaSummaryRes?.response?.groups || quotaSummaryRes?.groups).length > 0;
-    const hasConfigs = Array.isArray(userStatusRes?.userStatus?.cascadeModelConfigData?.clientModelConfigs);
-    if (!hasGroups && !hasConfigs) return null;
-    return { userStatusRes, quotaSummaryRes, hasGroups };
+    if (!origFetch || state.disposed) return null;
+    const qCtrl = new AbortController();
+    controllers.add(qCtrl);
+    const qTid = setTimeout(() => qCtrl.abort(), 12000);
+    try {
+      let csrf = getActiveCsrfToken();
+      if (!csrf) csrf = await refreshCsrfTokenFromHost(qCtrl.signal);
+      if (!csrf) return null;
+      const callRpc = async (method, allowRetry = true) => {
+        const r = await origFetch(`/exa.language_server_pb.LanguageServerService/${method}`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
+            'x-codeium-csrf-token': csrf
+          },
+          body: '{}',
+          signal: qCtrl.signal
+        });
+        if (r && (r.status === 401 || r.status === 403) && allowRetry && !qCtrl.signal.aborted) {
+          const fresh = await refreshCsrfTokenFromHost(qCtrl.signal);
+          if (fresh) {
+            csrf = fresh;
+            return callRpc(method, false);
+          }
+        }
+        if (!r || !r.ok) return null;
+        return await r.json();
+      };
+      const [uSet, qSet] = await Promise.allSettled([
+        callRpc('GetUserStatus', true),
+        callRpc('RetrieveUserQuotaSummary', true)
+      ]);
+      const userStatusRes = uSet.status === 'fulfilled' ? uSet.value : null;
+      const quotaSummaryRes = qSet.status === 'fulfilled' ? qSet.value : null;
+      const hasGroups = Array.isArray(quotaSummaryRes?.response?.groups || quotaSummaryRes?.groups) &&
+        (quotaSummaryRes?.response?.groups || quotaSummaryRes?.groups).length > 0;
+      const hasConfigs = Array.isArray(userStatusRes?.userStatus?.cascadeModelConfigData?.clientModelConfigs);
+      if (!hasGroups && !hasConfigs) return null;
+      return { userStatusRes, quotaSummaryRes, hasGroups };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(qTid);
+      controllers.delete(qCtrl);
+    }
   }
 
   async function syncQuotaFromHost(force = false) {
@@ -1660,16 +1939,21 @@
       state.quotaError = e?.message || '配额同步失败';
     }
 
-    // If backend snapshot lacks RetrieveUserQuotaSummary multi-window (weekly + 5h) buckets, supplement directly via same-origin RPC!
+    // 当后端额度拉取鉴权/网络失败、缺少多窗口（5h+周）分桶或旧缓存桶已过重置时间时，启用带实时浏览器 Cookie 的同源 RPC 自愈兜底
     try {
-      const curView = computeEffectiveQuotaView();
+      const nowMs = Date.now();
+      const curView = computeEffectiveQuotaView(nowMs);
       const hasMultiWindowSummary = Array.isArray(curView?.pools) && curView.pools.some(p =>
         p.sourceType === 'quota_summary_and_configs' ||
         (Array.isArray(p.buckets) && (p.buckets.length > 1 || p.buckets.some(b => b.windowKey === 'weekly' || /week|7d/i.test(String(b.windowShort || b.bucketId || '')))))
       );
-      if (!hasMultiWindowSummary && typeof core.buildModelQuotaSnapshot === 'function') {
+      const hasExpiredResetBucket = Array.isArray(curView?.pools) && curView.pools.some(p =>
+        Array.isArray(p.buckets) && p.buckets.some(b => Number.isFinite(Number(b?.resetAtMs)) && Number(b.resetAtMs) <= nowMs)
+      );
+      const needsDirectHeal = Boolean(state.quotaError) || !hasMultiWindowSummary || hasExpiredResetBucket || !curView?.pools?.length;
+      if (needsDirectHeal && typeof core.buildModelQuotaSnapshot === 'function') {
         const direct = await fetchDirectQuotaRpcSupplement();
-        if (direct && (direct.hasGroups || !curView?.pools?.length)) {
+        if (direct && (direct.hasGroups || !curView?.pools?.length || Boolean(state.quotaError) || hasExpiredResetBucket)) {
           const rawCfgs = direct.userStatusRes?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
           if (rawCfgs.length) mergeCascadeConfigs(rawCfgs);
           state.quotaRawInput = {
@@ -1727,69 +2011,82 @@
   }
 
   async function syncStudioStatuses() {
-    try {
-      const uRes = await callBackend({
+    // 并发拉取 4 个互不依赖的后端状态接口，消除串行往返叠加延迟
+    const [uSet, eSet, mSet, rSet] = await Promise.allSettled([
+      callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.getContextUnlockStatus === 'function'
           ? () => globalThis.contextMeterAPI.getContextUnlockStatus({})
           : null,
         liveRoute: '/context-unlock-status',
         body: {}
-      });
-      if (uRes?.ok && uRes.data) {
-        state.unlockStatus = uRes.data;
-        if (uRes.data.status === 'patched_pending_restart') {
-          state.restartRequired = true;
-        }
-      }
-    } catch {}
-
-    try {
-      const eRes = await callBackend({
+      }),
+      callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.getEnhanceStatus === 'function'
           ? () => globalThis.contextMeterAPI.getEnhanceStatus({})
           : null,
         liveRoute: '/enhance-status',
         body: {}
-      });
-      if (eRes?.ok && eRes.data) {
-        if (Number.isFinite(Number(eRes.data.promptTier))) state.promptTier = Number(eRes.data.promptTier);
-        if (typeof eRes.data.chineseTitle === 'boolean') state.zhChatTitle = eRes.data.chineseTitle;
-      }
-    } catch {}
-
-    try {
-      const mRes = await callBackend({
+      }),
+      callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.getModulesStatus === 'function'
           ? () => globalThis.contextMeterAPI.getModulesStatus()
           : null,
         liveRoute: '/modules-status',
         body: {}
-      });
-      if (mRes?.ok && mRes.data?.modules) {
-        const mods = mRes.data.modules;
-        state.proxyEnabled = Boolean(mods.proxy?.enabled);
-        if (mods.proxy?.proxyUrl) state.proxyUrl = mods.proxy.proxyUrl;
-        state.shellLanguage = mods.chinese?.language || (mods.chinese?.enabled ? 'zh-CN' : 'en');
-        state.brandTitle = mods.chinese?.brandTitle || 'english';
-        if (mRes.runtime?.proxyNeedsRestart || mRes.runtime?.chineseNeedsRestart) {
-          state.restartRequired = true;
-        }
-      }
-    } catch {}
-
-    try {
-      const rRes = await callBackend({
+      }),
+      callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.getRuntimeInfo === 'function'
           ? () => globalThis.contextMeterAPI.getRuntimeInfo()
           : null,
         liveRoute: '/runtime-info',
         body: {}
-      });
-      if (rRes?.ok) {
-        state.backendSource = rRes.backendSource || state.backendSource;
-        state.backendVersion = rRes.backendVersion || state.backendVersion;
+      })
+    ]);
+
+    const uRes = uSet.status === 'fulfilled' ? uSet.value : null;
+    if (uRes?.ok && uRes.data) {
+      state.unlockStatus = uRes.data;
+      if (uRes.data.status === 'patched_pending_restart') {
+        state.restartRequired = true;
       }
-    } catch {}
+    }
+
+    const eRes = eSet.status === 'fulfilled' ? eSet.value : null;
+    if (eRes?.ok && eRes.data) {
+      // getEnhanceStatusAsync 将摘要字段挂载在 data.summary 下，同时兼容平铺结构
+      const es = (eRes.data.summary && typeof eRes.data.summary === 'object') ? eRes.data.summary : eRes.data;
+      if (es.promptTier !== null && es.promptTier !== undefined && Number.isFinite(Number(es.promptTier))) {
+        state.promptTier = Number(es.promptTier);
+      }
+      if (typeof es.chineseTitleEnabled === 'boolean') {
+        state.zhChatTitle = es.chineseTitleEnabled;
+      } else if (typeof es.chineseTitle === 'boolean') {
+        state.zhChatTitle = es.chineseTitle;
+      }
+      if (es.pendingLsRestart === true) {
+        state.restartRequired = true;
+      }
+    }
+
+    const mRes = mSet.status === 'fulfilled' ? mSet.value : null;
+    if (mRes?.ok && mRes.data?.modules) {
+      const mods = mRes.data.modules;
+      state.proxyEnabled = Boolean(mods.proxy?.enabled);
+      if (mods.proxy?.proxyUrl) state.proxyUrl = mods.proxy.proxyUrl;
+      state.proxyProfiles = Array.isArray(mods.proxy?.profiles) ? mods.proxy.profiles : [];
+      state.activeProxyProfileId = typeof mods.proxy?.activeProfileId === 'string' ? mods.proxy.activeProfileId : null;
+      state.shellLanguage = mods.chinese?.language || (mods.chinese?.enabled ? 'zh-CN' : 'en');
+      state.brandTitle = mods.chinese?.brandTitle || 'english';
+      if (mRes.runtime?.proxyNeedsRestart || mRes.runtime?.chineseNeedsRestart) {
+        state.restartRequired = true;
+      }
+    }
+
+    const rRes = rSet.status === 'fulfilled' ? rSet.value : null;
+    if (rRes?.ok) {
+      state.backendSource = rRes.backendSource || state.backendSource;
+      state.backendVersion = rRes.backendVersion || state.backendVersion;
+    }
 
     renderBudgetSpace();
     renderStudioSpace();
@@ -1838,29 +2135,42 @@
     return (cap / 1e6) * deltaPerM;
   }
 
+  function formatCacheSavedText(usdVal, posPrefix = '省', negPrefix = '净增') {
+    const val = Number(usdVal) || 0;
+    const abs = Math.abs(val);
+    const digits = abs >= 0.01 ? abs.toFixed(2) : abs.toFixed(3);
+    if (val < -0.0005) return `${negPrefix} $${digits}`;
+    return `${posPrefix} $${digits}`;
+  }
+
   function computeSessionCacheStats() {
+    const getCallCacheWrite = (c) => Math.max(0, Number(c?.cacheWriteTokens ?? c?.cacheCreationInputTokens ?? 0));
     const promptCalls = (state.sessionCalls || []).filter(c => {
       const inp = Math.max(0, Number(c?.inputTokens || 0));
       const cap = Math.max(0, Number(c?.cacheReadTokens ?? c?.cacheTokens ?? 0));
-      return (inp + cap) > 0;
+      const cw = getCallCacheWrite(c);
+      return (inp + cap + cw) > 0;
     });
 
     if (promptCalls.length > 0) {
       let sessFreshInp = 0;
       let sessCacheRead = 0;
+      let sessCacheWrite = 0;
       let sessSavedUSD = 0;
       for (const c of promptCalls) {
         sessFreshInp += Math.max(0, Number(c.inputTokens || 0));
         sessCacheRead += Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? 0));
+        sessCacheWrite += getCallCacheWrite(c);
         sessSavedUSD += computeCallCacheSavedUSD(c);
       }
       const last = promptCalls[promptCalls.length - 1];
       const roundFreshInp = Math.max(0, Number(last.inputTokens || 0));
       const roundCacheRead = Math.max(0, Number(last.cacheReadTokens ?? last.cacheTokens ?? 0));
-      const roundPromptTotal = roundFreshInp + roundCacheRead;
+      const roundCacheWrite = getCallCacheWrite(last);
+      const roundPromptTotal = roundFreshInp + roundCacheRead + roundCacheWrite;
       const roundHitPct = roundPromptTotal > 0 ? (roundCacheRead / roundPromptTotal) * 100 : null;
       const roundSavedUSD = computeCallCacheSavedUSD(last);
-      const sessPromptTotal = sessFreshInp + sessCacheRead;
+      const sessPromptTotal = sessFreshInp + sessCacheRead + sessCacheWrite;
       const sessHitPct = sessPromptTotal > 0 ? (sessCacheRead / sessPromptTotal) * 100 : null;
 
       let cacheDropDetected = false;
@@ -1869,10 +2179,13 @@
         const prev = promptCalls[promptCalls.length - 2];
         const pInp = Math.max(0, Number(prev.inputTokens || 0));
         const pCap = Math.max(0, Number(prev.cacheReadTokens ?? prev.cacheTokens ?? 0));
-        const pTot = pInp + pCap;
+        const pCw = getCallCacheWrite(prev);
+        const pTot = pInp + pCap + pCw;
         if (pTot > 0) {
           prevHitPct = (pCap / pTot) * 100;
-          if (prevHitPct >= 45 && roundPromptTotal >= 6000 && roundHitPct !== null && roundHitPct < 10) {
+          // 发生 Antigravity 自动压缩时上下文前缀重建属于正常现象，不误报为异常缓存断流
+          const isCompacted = Boolean(pTot >= 12000 && roundPromptTotal > 0 && roundPromptTotal < pTot * 0.72);
+          if (!isCompacted && prevHitPct >= 45 && roundPromptTotal >= 6000 && roundHitPct !== null && roundHitPct < 10) {
             cacheDropDetected = true;
           }
         }
@@ -1880,12 +2193,14 @@
 
       return {
         promptTurnCount: promptCalls.length,
-        roundFreshInp,
+        roundFreshInp: roundFreshInp + roundCacheWrite,
         roundCacheRead,
+        roundCacheWrite,
         roundHitPct,
         roundSavedUSD,
-        sessFreshInp,
+        sessFreshInp: sessFreshInp + sessCacheWrite,
         sessCacheRead,
+        sessCacheWrite,
         sessHitPct,
         sessSavedUSD,
         cacheDropDetected,
@@ -1893,22 +2208,31 @@
       };
     }
 
-    // Fallback to state.latest (note: core.summarize sets latest.input = freshInput + cacheReadTokens)
+    // Fallback to state.latest (core.summarize sets latest.input = freshInput + cacheRead + cacheWrite)
     const l = state.latest;
     const latestTotalPrompt = Number(l?.input || 0);
     if (l && !l.estimated && latestTotalPrompt > 0) {
       const cap = Math.min(latestTotalPrompt, Math.max(0, Number(l.cached || 0)));
-      const fresh = Math.max(0, latestTotalPrompt - cap);
+      const cw = Math.min(Math.max(0, latestTotalPrompt - cap), Math.max(0, Number(l.cacheWrite || 0)));
+      const fresh = Math.max(0, latestTotalPrompt - cap - cw);
       const hitPct = (cap / latestTotalPrompt) * 100;
-      const saved = (cap / 1e6) * (1.50 - 0.075);
+      const saved = computeCallCacheSavedUSD({
+        model: l.modelId || l.model || '',
+        inputTokens: fresh,
+        cacheReadTokens: cap,
+        cacheWriteTokens: cw,
+        outputTokens: Math.max(0, Number(l.output || 0))
+      });
       return {
         promptTurnCount: 1,
-        roundFreshInp: fresh,
+        roundFreshInp: fresh + cw,
         roundCacheRead: cap,
+        roundCacheWrite: cw,
         roundHitPct: hitPct,
         roundSavedUSD: saved,
-        sessFreshInp: fresh,
+        sessFreshInp: fresh + cw,
         sessCacheRead: cap,
+        sessCacheWrite: cw,
         sessHitPct: hitPct,
         sessSavedUSD: saved,
         cacheDropDetected: false,
@@ -1920,10 +2244,12 @@
       promptTurnCount: 0,
       roundFreshInp: 0,
       roundCacheRead: 0,
+      roundCacheWrite: 0,
       roundHitPct: null,
       roundSavedUSD: 0,
       sessFreshInp: 0,
       sessCacheRead: 0,
+      sessCacheWrite: 0,
       sessHitPct: null,
       sessSavedUSD: 0,
       cacheDropDetected: false,
@@ -2008,8 +2334,10 @@
     } else {
       if (island) island.dataset.state = 'normal';
       if (healthTag) {
-        healthTag.className = latest ? 'tag' : 'tag neutral';
-        healthTag.textContent = latest ? `充裕 · 剩余 ${formatK(remTok)}` : (state.route ? '等待模型响应' : '未进入会话');
+        healthTag.className = latest ? 'tag' : (state.requestError ? 'tag warn' : 'tag neutral');
+        healthTag.textContent = latest
+          ? `充裕 · 剩余 ${formatK(remTok)}`
+          : (state.route ? (state.requestError ? `重连中 (${state.requestError})` : '等待模型响应') : '未进入会话');
       }
       heroCirc?.setAttribute('stroke', 'var(--accent)');
       dialCtx?.setAttribute('stroke', 'var(--accent)');
@@ -2041,10 +2369,9 @@
       if (tipCacheEl) { tipCacheEl.textContent = `${sessPct.toFixed(1)}% · 首轮建库`; tipCacheEl.style.color = 'var(--accent-2)'; }
     } else {
       const sessColor = sessPct >= 50 ? 'var(--emerald)' : (sessPct >= 20 ? 'var(--amber)' : 'var(--fg-2)');
-      const absSaved = Math.abs(cacheStats.sessSavedUSD);
-      const savedFmt = `${cacheStats.sessSavedUSD < 0 ? '-' : ''}$${absSaved >= 0.01 ? absSaved.toFixed(2) : absSaved.toFixed(3)}`;
+      const savedLabel = formatCacheSavedText(cacheStats.sessSavedUSD, '省', '净增');
       if (heroCachePctEl) { heroCachePctEl.textContent = `${sessPct.toFixed(1)}%`; heroCachePctEl.style.color = sessColor; }
-      if (heroCacheSubEl) heroCacheSubEl.textContent = `· 省 ${savedFmt}`;
+      if (heroCacheSubEl) heroCacheSubEl.textContent = `· ${savedLabel}`;
       if (cacheBarFillEl) cacheBarFillEl.style.width = `${Math.min(100, Math.max(4, sessPct)).toFixed(1)}%`;
 
       if (cacheStats.cacheDropDetected) {
@@ -2054,7 +2381,7 @@
       } else {
         if (cacheBox) cacheBox.dataset.cacheState = sessPct >= 50 ? 'good' : 'low';
         if (cacheBadgeEl) cacheBadgeEl.textContent = t('latestReqJump');
-        if (tipCacheEl) { tipCacheEl.textContent = `${sessPct.toFixed(1)}% · 省 ${savedFmt}`; tipCacheEl.style.color = sessColor; }
+        if (tipCacheEl) { tipCacheEl.textContent = `${sessPct.toFixed(1)}% · ${savedLabel}`; tipCacheEl.style.color = sessColor; }
       }
     }
 
@@ -2268,10 +2595,16 @@
     const primary = pools.find(p => p.key === state.selectedPoolKey) || matchedActivePool || pools[0];
 
     const dialQuota = el('dialQuota');
-    if (dialQuota && primary.pct !== null) {
-      dialQuota.style.strokeDashoffset = (27.02 * (1 - primary.pct / 100)).toFixed(2);
-      const qColor = primary.pct <= 15 ? 'var(--rose)' : primary.pct <= 35 ? 'var(--amber)' : 'var(--emerald)';
-      dialQuota.setAttribute('stroke', qColor);
+    if (dialQuota) {
+      if (primary.pct !== null) {
+        dialQuota.style.strokeDashoffset = (27.02 * (1 - primary.pct / 100)).toFixed(2);
+        const qColor = primary.pct <= 15 ? 'var(--rose)' : primary.pct <= 35 ? 'var(--amber)' : 'var(--emerald)';
+        dialQuota.setAttribute('stroke', qColor);
+      } else {
+        // 选中无权限或缺失配额池时将外环重置为灰态，防止残留上一个池子的绿色进度
+        dialQuota.style.strokeDashoffset = '27.02';
+        dialQuota.setAttribute('stroke', 'var(--fg-3)');
+      }
     }
     if (el('islandQuotaSub')) {
       const winPrefix = primary.tightestTag ? `${primary.tightestTag} ` : '余 ';
@@ -2469,7 +2802,7 @@
         : (!pref || pref.mode === 'default' ? `默认 (${formatK(curVal)})` : curVal.toLocaleString());
     }
     const scopedInj = state.budgetScope === 'unified'
-      ? (state.lastInjectedLimit ? { mode: state.lastInjectedMode, limitTokens: state.lastInjectedLimit, failed: false } : null)
+      ? (state.lastInjectedLimit ? { mode: state.lastInjectedMode, limitTokens: state.lastInjectedLimit, failed: state.lastInjectedFailed } : null)
       : (state.injectedByProduct.get(selProd.productKey) || null);
     if (el('pipeSent')) {
       if (scopedInj?.failed) {
@@ -2506,6 +2839,12 @@
       } else if (state.unlockStatus?.status === 'patched_pending_restart') {
         binBadge.className = 'tag warn';
         binBadge.textContent = t('unlockPendingRestart');
+      } else if (state.unlockStatus?.status === 'partial_match') {
+        binBadge.className = 'tag warn';
+        binBadge.textContent = '底座部分匹配（建议还原重装）';
+      } else if (state.unlockStatus?.status === 'failed' || state.unlockStatus?.status === 'unknown') {
+        binBadge.className = 'tag warn';
+        binBadge.textContent = '底座状态异常';
       } else if (isBinaryDynamicUnlocked()) {
         binBadge.className = 'tag';
         binBadge.textContent = t('unlockDynamicActive');
@@ -2564,6 +2903,226 @@
     return entries;
   }
 
+  function formatModelRankLabel(modelKey) {
+    const raw = String(modelKey || '').trim();
+    if (!raw) return 'Unknown Model';
+    const pricingLabel = core.MODEL_PRICING_TABLE?.[raw]?.label;
+    if (pricingLabel) return pricingLabel;
+    const grouped = groupProductSafe({ modelId: raw, label: raw });
+    if (grouped?.label && grouped.productKey !== 'unknown') return grouped.label;
+    return raw;
+  }
+
+  /**
+   * 汇总当前账本来源下各模型的 API 花费、Token 量与占比，按花费降序排列
+   */
+  function buildModelCostRanking(srcCostEst) {
+    const rawByModel = (srcCostEst && srcCostEst.byModel && typeof srcCostEst.byModel === 'object')
+      ? srcCostEst.byModel
+      : {};
+    const rows = [];
+    for (const [modelKey, info] of Object.entries(rawByModel)) {
+      if (!info || typeof info !== 'object') continue;
+      const requests = Math.max(0, Number(info.requests || 0));
+      const costUSD = Math.max(0, Number(info.costUSD || 0));
+      const tokens = Math.max(0, Number(info.tokens || 0));
+      if (requests === 0 && tokens === 0 && costUSD === 0) continue;
+      rows.push({
+        modelKey,
+        label: formatModelRankLabel(modelKey),
+        requests,
+        costUSD: Number(costUSD.toFixed(6)),
+        tokens
+      });
+    }
+
+    // 当持久账本尚无模型分项且当前非纯 CLI 视图时，回退汇总当前活跃会话的调用明细
+    if (rows.length === 0 && state.ledgerSource !== 'cli' && state.sessionCalls.length > 0) {
+      const map = new Map();
+      for (const c of state.sessionCalls) {
+        const key = String(c.modelKey || groupProductSafe({ modelId: c.modelExactId || c.model, label: c.modelLabel || c.model }).productKey || 'unknown');
+        const cur = map.get(key) || { modelKey: key, label: formatModelRankLabel(c.modelLabel || key), requests: 0, costUSD: 0, tokens: 0 };
+        const inp = Math.max(0, Number(c.inputTokens || 0));
+        const cap = Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? 0));
+        const cw = Math.max(0, Number(c.cacheWriteTokens ?? c.cacheCreationInputTokens ?? 0));
+        const out = Math.max(0, Number(c.outputTokens || 0));
+        cur.requests += 1;
+        cur.costUSD = Number((cur.costUSD + Math.max(0, Number(c.costUSD || 0))).toFixed(6));
+        cur.tokens += Math.max(0, Number(c.totalTokens || (inp + cap + cw + out)));
+        map.set(key, cur);
+      }
+      rows.push(...map.values());
+    }
+
+    const totalCost = rows.reduce((s, r) => s + r.costUSD, 0);
+    const totalTokens = rows.reduce((s, r) => s + r.tokens, 0);
+    rows.sort((a, b) => (b.costUSD - a.costUSD) || (b.tokens - a.tokens) || a.label.localeCompare(b.label));
+    return rows.map((r) => ({
+      ...r,
+      sharePct: totalCost > 0
+        ? Number(((r.costUSD / totalCost) * 100).toFixed(1))
+        : (totalTokens > 0 ? Number(((r.tokens / totalTokens) * 100).toFixed(1)) : 0)
+    }));
+  }
+
+  function renderModelCostRanking(panelEl, items) {
+    if (!panelEl) return;
+    if (!items.length) {
+      panelEl.innerHTML = `<div style="font-size:11px;color:var(--fg-3);padding:18px 0;text-align:center">${escapeSvgText(t('emptyModelRank'))}</div>`;
+      return;
+    }
+    panelEl.innerHTML = items.map((item) => {
+      const barW = Math.max(2, Math.min(100, Number(item.sharePct || 0))).toFixed(1);
+      return `
+        <div class="model-rank-row">
+          <div class="model-rank-hdr">
+            <span style="font-weight:600;color:var(--fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeSvgText(item.label)} <small class="mono" style="color:var(--fg-3);font-weight:400">(${item.requests} 次)</small></span>
+            <span class="mono" style="color:var(--fg-1);white-space:nowrap"><strong>$${item.costUSD.toFixed(2)}</strong> · ${formatCompactTokens(item.tokens)} · <span style="color:var(--emerald)">${item.sharePct.toFixed(1)}%</span></span>
+          </div>
+          <div class="thin-bar"><i style="width:${barW}%;background:linear-gradient(90deg,var(--accent),var(--emerald))"></i></div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  /**
+   * 构建账本导出载荷（支持带 UTF-8 BOM 的 CSV 表格与完整结构化 JSON 快照）
+   */
+  function buildLedgerExportData(format = 'csv') {
+    const fmt = String(format || 'csv').toLowerCase() === 'json' ? 'json' : 'csv';
+    const nowLocal = new Date();
+    const todayStr = `${nowLocal.getFullYear()}-${String(nowLocal.getMonth() + 1).padStart(2, '0')}-${String(nowLocal.getDate()).padStart(2, '0')}`;
+    let days = getFilteredDailySeries();
+    if (days.length === 0 && state.ledgerSource !== 'cli' && state.sessionCalls.length > 0) {
+      let inp = 0; let cap = 0; let out = 0; let tot = 0; let cost = 0;
+      for (const c of state.sessionCalls) {
+        const ci = Math.max(0, Number(c.inputTokens || 0));
+        const cc = Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? 0));
+        const cw = Math.max(0, Number(c.cacheWriteTokens ?? c.cacheCreationInputTokens ?? 0));
+        const co = Math.max(0, Number(c.outputTokens || 0));
+        inp += ci + cw;
+        cap += cc;
+        out += co;
+        tot += Number(c.totalTokens || (ci + cc + cw + co));
+        cost += Math.max(0, Number(c.costUSD || 0));
+      }
+      if (tot > 0) {
+        days = [{ date: todayStr, input: inp, cache: cap, output: out, total: tot, costUSD: Number(cost.toFixed(6)) }];
+      }
+    }
+
+    const srcCostEst = state.historyData?.costEstimateBySource?.[state.ledgerSource] || state.historyData?.costEstimate || null;
+    const modelBreakdown = buildModelCostRanking(srcCostEst);
+    let totalTokens = 0; let inputTokens = 0; let cacheReadTokens = 0; let outputTokens = 0; let estimatedCostUSD = 0; let activeDays = 0;
+    const enrichedDaily = days.map((d) => {
+      totalTokens += d.total;
+      inputTokens += d.input;
+      cacheReadTokens += d.cache;
+      outputTokens += d.output;
+      estimatedCostUSD += d.costUSD;
+      if (d.total > 0) activeDays += 1;
+      const promptTot = d.input + d.cache;
+      const hitPct = promptTot > 0 ? Number(((d.cache / promptTot) * 100).toFixed(1)) : 0;
+      return {
+        date: d.date,
+        source: state.ledgerSource,
+        totalTokens: Math.round(d.total),
+        inputTokens: Math.round(d.input),
+        cacheReadTokens: Math.round(d.cache),
+        outputTokens: Math.round(d.output),
+        cacheHitPct: hitPct,
+        estimatedCostUSD: Number(d.costUSD.toFixed(4))
+      };
+    });
+
+    const totalPrompt = inputTokens + cacheReadTokens;
+    const summary = {
+      activeDays,
+      totalTokens: Math.round(totalTokens),
+      inputTokens: Math.round(inputTokens),
+      cacheReadTokens: Math.round(cacheReadTokens),
+      outputTokens: Math.round(outputTokens),
+      cacheHitPct: totalPrompt > 0 ? Number(((cacheReadTokens / totalPrompt) * 100).toFixed(1)) : 0,
+      estimatedCostUSD: Number((Number(srcCostEst?.pricedCostUSD || 0) || estimatedCostUSD).toFixed(4))
+    };
+
+    const baseName = `antigravity-pulse-ledger-${state.ledgerSource}-${todayStr}`;
+    if (fmt === 'json') {
+      const payload = {
+        exportedAt: nowLocal.toISOString(),
+        version: METER_VERSION,
+        source: state.ledgerSource,
+        valuationMode: state.valuationMode,
+        summary,
+        modelBreakdown,
+        daily: enrichedDaily
+      };
+      return {
+        format: 'json',
+        filename: `${baseName}.json`,
+        mimeType: 'application/json;charset=utf-8',
+        content: JSON.stringify(payload, null, 2),
+        rowCount: enrichedDaily.length
+      };
+    }
+
+    const csvCell = (val) => {
+      if (typeof val === 'number') return Number.isFinite(val) ? String(val) : '0';
+      let s = String(val ?? '');
+      // 防止表格软件将文本单元格误解析为公式执行
+      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+      if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const header = 'date,source,total_tokens,input_tokens,cache_read_tokens,output_tokens,cache_hit_pct,estimated_cost_usd';
+    const lines = [header];
+    for (const row of enrichedDaily) {
+      lines.push([
+        csvCell(row.date),
+        csvCell(row.source),
+        csvCell(row.totalTokens),
+        csvCell(row.inputTokens),
+        csvCell(row.cacheReadTokens),
+        csvCell(row.outputTokens),
+        csvCell(row.cacheHitPct),
+        csvCell(row.estimatedCostUSD)
+      ].join(','));
+    }
+    // 写入 UTF-8 BOM 确保 Excel 打开中文/UTF-8 编码不乱码
+    return {
+      format: 'csv',
+      filename: `${baseName}.csv`,
+      mimeType: 'text/csv;charset=utf-8',
+      content: `\uFEFF${lines.join('\r\n')}\r\n`,
+      rowCount: enrichedDaily.length
+    };
+  }
+
+  async function exportLedgerData(format = 'csv') {
+    const exp = buildLedgerExportData(format);
+    try {
+      if (typeof Blob === 'function' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' && document?.body) {
+        const blob = new Blob([exp.content], { type: exp.mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = exp.filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => {
+          try { URL.revokeObjectURL(url); } catch {}
+        }, 1500);
+        notify(`已导出 ${exp.filename}（共 ${exp.rowCount} 天记录）`);
+        return true;
+      }
+    } catch {}
+    const copied = await copyTextToClipboard(exp.content);
+    notify(copied ? `当前环境不支持直接下载，已复制 ${exp.format.toUpperCase()} 账本到剪贴板` : '导出失败，请重试');
+    return copied;
+  }
+
   function renderLedgerSpace() {
     qsa('#ledgerSrcSeg .seg-item').forEach(b => b.classList.toggle('on', b.dataset.lsrc === state.ledgerSource));
     qsa('#heatModeSeg .seg-item').forEach(b => b.classList.toggle('on', b.dataset.hm === state.heatMode));
@@ -2598,14 +3157,16 @@
       if (d.date.startsWith(monthPrefix)) monthTotal += d.total;
     }
 
-    if (grandTotal === 0 && state.sessionCalls.length > 0) {
+    // state.sessionCalls 仅记录桌面端活跃会话调用，CLI 来源为空时严禁回退掺入桌面端调用
+    if (grandTotal === 0 && state.ledgerSource !== 'cli' && state.sessionCalls.length > 0) {
       for (const c of state.sessionCalls) {
         const inp = Math.max(0, Number(c.inputTokens || 0));
         const cap = Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? 0));
+        const cw = Math.max(0, Number(c.cacheWriteTokens ?? c.cacheCreationInputTokens ?? 0));
         const out = Math.max(0, Number(c.outputTokens || 0));
-        const tot = Number(c.totalTokens || (inp + cap + out));
+        const tot = Number(c.totalTokens || (inp + cap + cw + out));
         grandTotal += tot;
-        totalInp += inp;
+        totalInp += inp + cw;
         totalCap += cap;
         totalOut += out;
         todayTotal += tot;
@@ -2636,7 +3197,7 @@
     if (el('ledgerSubTotals')) {
       el('ledgerSubTotals').textContent = `今日 ${formatCompactTokens(todayTotal)} · 本月 ${formatCompactTokens(monthTotal)}`;
     }
-    if (el('tipTodayVal')) {
+    if (el('tipTodayVal') && state.ledgerSource === 'all') {
       const todayRec = days.find(x => x.date === todayStr);
       const todayCost = todayRec?.costUSD ? todayRec.costUSD : state.sessionCostTotal;
       el('tipTodayVal').textContent = `${formatCompactTokens(todayTotal)} · $${todayCost.toFixed(2)}`;
@@ -2644,40 +3205,55 @@
 
     const ledgerPromptTotal = totalInp + totalCap;
     const ledgerHitPct = ledgerPromptTotal > 0 ? (totalCap / ledgerPromptTotal) * 100 : null;
-    const valModelForSave = state.valuationMode === 'claude-opus-4-6-thinking' ? 'claude-opus-5-5' : 'gemini-4-hydrogen';
+    const resolveValuationModelKey = (mode) => {
+      if (mode === 'claude-opus-4-6-thinking') return 'claude-opus-5-5';
+      if (mode === 'gemini-3.1-pro' || mode === 'gemini-3.1-pro-preview') return 'gemini-3.1-pro-preview';
+      return 'gemini-4-hydrogen';
+    };
+    const valModelKey = resolveValuationModelKey(state.valuationMode);
     const ledgerSavedUSD = typeof core.calculateNetCacheSavedUSD === 'function'
       ? core.calculateNetCacheSavedUSD({
-          model: valModelForSave,
+          model: valModelKey,
           inputTokens: totalInp,
           cacheReadTokens: totalCap,
           outputTokens: totalOut
         })
-      : ((totalCap / 1e6) * (state.valuationMode === 'claude-opus-4-6-thinking' ? (4.00 - 0.20) : (1.50 - 0.075)));
+      : ((totalCap / 1e6) * (valModelKey === 'claude-opus-5-5' ? (4.00 - 0.20) : (valModelKey === 'gemini-3.1-pro-preview' ? (2.00 - 0.20) : (1.50 - 0.075))));
     if (el('ledgerCacheSummary')) {
       el('ledgerCacheSummary').textContent = ledgerHitPct !== null
-        ? `缓存命中 ${ledgerHitPct.toFixed(1)}% · 累计省 $${ledgerSavedUSD.toFixed(2)}`
+        ? `缓存命中 ${ledgerHitPct.toFixed(1)}% · ${formatCacheSavedText(ledgerSavedUSD, '累计省', '累计净增')}`
         : '缓存命中 --% · 省 $0.00';
     }
 
     const srcCostEst = state.historyData?.costEstimateBySource?.[state.ledgerSource] || state.historyData?.costEstimate || null;
     const pricedActualUSD = Number(srcCostEst?.pricedCostUSD || 0);
-    let inpCost = totalInp * (1.50 / 1e6);
-    let capCost = totalCap * (0.075 / 1e6);
-    let outCost = totalOut * (7.50 / 1e6);
-    if (state.valuationMode === 'claude-opus-4-6-thinking') {
-      inpCost = totalInp * (4.00 / 1e6);
-      capCost = totalCap * (0.20 / 1e6);
-      outCost = totalOut * (20.00 / 1e6);
-    }
+    // 统一通过 core.calculateReferenceModelCost 按真实定价表计算折算分项，保证 gemini-3.1-pro / opus / hydrogen 全部精确对齐
+    const refCalc = typeof core.calculateReferenceModelCost === 'function'
+      ? core.calculateReferenceModelCost(
+          { inputTokens: totalInp, cacheTokens: totalCap, outputTokens: totalOut, totalTokens: grandTotal },
+          valModelKey
+        )
+      : null;
+    let inpCost = refCalc ? Number(refCalc.inputCostUSD ?? refCalc.breakdownCostUSD?.input ?? 0) : (totalInp * (1.50 / 1e6));
+    let capCost = refCalc ? Number(refCalc.cacheCostUSD ?? refCalc.breakdownCostUSD?.cache ?? 0) : (totalCap * (0.075 / 1e6));
+    let outCost = refCalc ? Number(refCalc.outputCostUSD ?? refCalc.breakdownCostUSD?.output ?? 0) : (totalOut * (7.50 / 1e6));
+    const refSum = inpCost + capCost + outCost;
     const effectiveTotalUSD = state.valuationMode === 'actual'
-      ? (pricedActualUSD > 0 ? pricedActualUSD : (totalActualUSD > 0 ? totalActualUSD : (inpCost + capCost + outCost)))
-      : (inpCost + capCost + outCost);
+      ? (pricedActualUSD > 0 ? pricedActualUSD : (totalActualUSD > 0 ? totalActualUSD : refSum))
+      : refSum;
+    // actual 模式下若存在多模型混合真实账单总价，按比例对齐分项金额使其与折算总额保持一致
+    if (state.valuationMode === 'actual' && refSum > 0 && effectiveTotalUSD > 0 && Math.abs(effectiveTotalUSD - refSum) > 0.0001) {
+      const scale = effectiveTotalUSD / refSum;
+      inpCost *= scale;
+      capCost *= scale;
+      outCost *= scale;
+    }
 
     if (el('apiBreakdownNums')) {
       const hitTag = ledgerHitPct !== null ? `${ledgerHitPct.toFixed(1)}% 命中` : '0%';
       el('apiBreakdownNums').innerHTML =
         `<span>新输入: <strong>$${inpCost.toFixed(2)}</strong></span>` +
-        `<span>缓存 (${hitTag}): <strong style="color:var(--emerald)">$${capCost.toFixed(2)}</strong> <small style="color:var(--emerald)">(省 $${ledgerSavedUSD.toFixed(2)})</small></span>` +
+        `<span>缓存 (${hitTag}): <strong style="color:var(--emerald)">$${capCost.toFixed(2)}</strong> <small style="color:var(--emerald)">(${formatCacheSavedText(ledgerSavedUSD, '省', '净增')})</small></span>` +
         `<span>输出: <strong>$${outCost.toFixed(2)}</strong></span>`;
     }
 
@@ -2688,13 +3264,16 @@
 
     const isFreeMode = state.subAcqMode === 'free_edu' || state.subAcqMode === 'free_tier';
     const effPrice = isFreeMode ? 0 : Number(state.subPrice || 0);
+    // 动态从 core.convertToCNY(1, 'USD') 获取统一基准汇率，杜绝与核心汇率表 (6.72) 分叉造成 7.4% 系统偏差
+    const usdToCnyRate = typeof core.convertToCNY === 'function'
+      ? (Number(core.convertToCNY(1, 'USD')) || 6.72)
+      : 6.72;
     const cnyMonthly = typeof core.convertToCNY === 'function'
       ? Number(core.convertToCNY(effPrice, state.subCurrency) || 0)
-      : effPrice * 7.22;
-    // USD 订阅直接使用原值计算美元月费，避免经 CNY 中转二次换算引入汇率舍入偏差
+      : effPrice * usdToCnyRate;
     const usdMonthly = String(state.subCurrency || '').toUpperCase() === 'USD'
       ? effPrice
-      : (cnyMonthly / 7.22);
+      : (cnyMonthly / usdToCnyRate);
     const sym = (core.CURRENCY_SYMBOLS && core.CURRENCY_SYMBOLS[state.subCurrency]) || state.subCurrency;
 
     if (el('roiMultTxt')) {
@@ -2711,7 +3290,9 @@
 
     const dailyWrap = el('hmDailyWrap');
     const altSvg = el('hmAltSvg');
+    const modelsPanel = el('ledgerModelsPanel');
     const hoverEl = el('hmHoverTxt');
+    const isModelsMode = state.ledgerBottomMode === 'models';
 
     const dayMap = new Map(days.map(d => [d.date, d]));
     const endDay = new Date();
@@ -2729,44 +3310,94 @@
     }
     if (el('btnHmNext')) el('btnHmNext').disabled = state.hmPageOffset <= 0;
 
-    if (state.heatMode === 'daily') {
-      if (dailyWrap) dailyWrap.style.display = 'grid';
-      if (altSvg) altSvg.style.display = 'none';
-      renderDailyHeatmapGrid(dailyWrap, paddedSeries, (item) => {
-        if (hoverEl) {
-          const dayPrompt = (item.input || 0) + (item.cache || 0);
-          const dayHitTxt = dayPrompt > 0 ? ` · 命中 ${((item.cache / dayPrompt) * 100).toFixed(1)}%` : '';
-          hoverEl.textContent = `${item.date} · ${formatCompactTokens(item.total)} tok (新输入 ${formatCompactTokens(item.input)} · 缓存 ${formatCompactTokens(item.cache)}${dayHitTxt} · 输出 ${formatCompactTokens(item.output)})`;
-        }
-      });
-    } else {
+    if (isModelsMode) {
+      const modelRanking = buildModelCostRanking(srcCostEst);
       if (dailyWrap) dailyWrap.style.display = 'none';
-      if (altSvg) altSvg.style.display = 'block';
-      const bucketMap = new Map();
-      // 年度与全周期累计视图使用完整历史天数聚合，避免被 252 天分页切片截断早期记录
-      const sourceSeries = (state.heatMode === 'yearly' || state.heatMode === 'cum') && days.length > 0
-        ? days
-        : paddedSeries;
-      if ((state.heatMode === 'yearly' || state.heatMode === 'cum') && days.length > 0 && el('hmPeriodLbl')) {
-        el('hmPeriodLbl').textContent = `${days[0].date} – ${days[days.length - 1].date}`;
+      if (altSvg) altSvg.style.display = 'none';
+      if (modelsPanel) {
+        modelsPanel.style.display = 'flex';
+        renderModelCostRanking(modelsPanel, modelRanking);
       }
-      for (let idx = 0; idx < sourceSeries.length; idx++) {
-        const item = sourceSeries[idx];
-        const key = state.heatMode === 'weekly'
-          ? `W${Math.floor(idx / 7) + 1}`
-          : state.heatMode === 'monthly'
-            ? item.date.slice(0, 7)
-            : state.heatMode === 'yearly'
-              ? item.date.slice(0, 4)
-              : item.date;
-        const cur = bucketMap.get(key) || { shortLabel: key.slice(-5), total: 0, date: key };
-        cur.total += item.total;
-        bucketMap.set(key, cur);
+      if (hoverEl) {
+        hoverEl.textContent = modelRanking.length > 0
+          ? `共统计 ${modelRanking.length} 个已计价模型 · 按 API 零售花费降序排列`
+          : t('emptyModelRank');
       }
-      renderAlternateHistorySvg(altSvg, state.heatMode, Array.from(bucketMap.values()), (b) => {
-        if (hoverEl) hoverEl.textContent = `${b.date} · 合计 ${formatCompactTokens(b.total)} tok`;
-      }, state.panelLang);
+    } else {
+      if (modelsPanel) modelsPanel.style.display = 'none';
+      if (state.heatMode === 'daily') {
+        if (dailyWrap) dailyWrap.style.display = 'grid';
+        if (altSvg) altSvg.style.display = 'none';
+        renderDailyHeatmapGrid(dailyWrap, paddedSeries, (item) => {
+          if (hoverEl) {
+            const dayPrompt = (item.input || 0) + (item.cache || 0);
+            const dayHitTxt = dayPrompt > 0 ? ` · 命中 ${((item.cache / dayPrompt) * 100).toFixed(1)}%` : '';
+            hoverEl.textContent = `${item.date} · ${formatCompactTokens(item.total)} tok (新输入 ${formatCompactTokens(item.input)} · 缓存 ${formatCompactTokens(item.cache)}${dayHitTxt} · 输出 ${formatCompactTokens(item.output)})`;
+          }
+        });
+      } else {
+        if (dailyWrap) dailyWrap.style.display = 'none';
+        if (altSvg) altSvg.style.display = 'block';
+        const bucketMap = new Map();
+        // 年度与全周期累计视图使用完整历史天数聚合，避免被 252 天分页切片截断早期记录
+        const sourceSeries = (state.heatMode === 'yearly' || state.heatMode === 'cum') && days.length > 0
+          ? days
+          : paddedSeries;
+        if ((state.heatMode === 'yearly' || state.heatMode === 'cum') && days.length > 0 && el('hmPeriodLbl')) {
+          el('hmPeriodLbl').textContent = `${days[0].date} – ${days[days.length - 1].date}`;
+        }
+        for (let idx = 0; idx < sourceSeries.length; idx++) {
+          const item = sourceSeries[idx];
+          const key = state.heatMode === 'weekly'
+            ? `W${Math.floor(idx / 7) + 1}`
+            : state.heatMode === 'monthly'
+              ? item.date.slice(0, 7)
+              : state.heatMode === 'yearly'
+                ? item.date.slice(0, 4)
+                : item.date;
+          const cur = bucketMap.get(key) || { shortLabel: key.slice(-5), total: 0, date: key };
+          cur.total += item.total;
+          bucketMap.set(key, cur);
+        }
+        renderAlternateHistorySvg(altSvg, state.heatMode, Array.from(bucketMap.values()), (b) => {
+          if (hoverEl) hoverEl.textContent = `${b.date} · 合计 ${formatCompactTokens(b.total)} tok`;
+        }, state.panelLang);
+      }
     }
+  }
+
+  function redactProxyUrlForDisplay(rawUrl) {
+    try {
+      const parsed = new URL(String(rawUrl || '').trim());
+      if (parsed.username || parsed.password) {
+        parsed.username = '***';
+        parsed.password = '';
+      }
+      return parsed.toString().replace(/\/$/, '');
+    } catch {
+      return String(rawUrl || '').replace(/\/\/[^/@\s]+@/, '//***@');
+    }
+  }
+
+  function renderProxyProfiles() {
+    const bar = el('proxyProfileBar');
+    if (bar) {
+      const chipsHtml = (state.proxyProfiles || []).map((prof) => {
+        const isActive = prof.id === state.activeProxyProfileId || (
+          !state.activeProxyProfileId && String(prof.proxyUrl || '').trim() === String(state.proxyUrl || '').trim()
+        );
+        const safeUrl = redactProxyUrlForDisplay(prof.proxyUrl);
+        return `
+          <button class="proxy-profile-chip${isActive ? ' active' : ''}" type="button" data-prof-id="${escapeSvgText(prof.id)}" title="${escapeSvgText(safeUrl)}">
+            <span class="proxy-profile-chip-name">${escapeSvgText(prof.name)}</span>
+            <span class="proxy-profile-del" data-del-prof="${escapeSvgText(prof.id)}" title="删除此预设">×</span>
+          </button>
+        `;
+      }).join('');
+      bar.innerHTML = chipsHtml + `<button class="proxy-profile-chip" type="button" data-add-prof="1">${escapeSvgText(t('addProfileBtn'))}</button>`;
+    }
+    const editor = el('proxyProfileEditor');
+    if (editor) editor.hidden = !state.proxyProfileEditorOpen;
   }
 
   function renderStudioSpace() {
@@ -2776,6 +3407,7 @@
     el('toggleProxyMod')?.classList.toggle('on', state.proxyEnabled);
     const pInput = el('proxyUrlInput');
     if (pInput && shadow.activeElement !== pInput) pInput.value = state.proxyUrl;
+    renderProxyProfiles();
 
     const setStep = (id, val) => {
       const node = el(id);
@@ -2795,14 +3427,86 @@
     }
   }
 
+  /**
+   * 按时间顺序构建会话每轮请求轨迹，识别 Antigravity 自动压缩点与非压缩缓存断流
+   */
+  function buildSessionTurnTimeline(calls) {
+    const promptCalls = (Array.isArray(calls) ? calls : []).filter((c) => {
+      const inp = Math.max(0, Number(c?.inputTokens || 0));
+      const cap = Math.max(0, Number(c?.cacheReadTokens ?? c?.cacheTokens ?? 0));
+      const cw = Math.max(0, Number(c?.cacheWriteTokens ?? c?.cacheCreationInputTokens ?? 0));
+      return (inp + cap + cw) > 0;
+    });
+
+    const turns = [];
+    let prevPrompt = 0;
+    let prevHitPct = null;
+    let compactionCount = 0;
+    let cacheDropCount = 0;
+
+    for (let i = 0; i < promptCalls.length; i++) {
+      const c = promptCalls[i];
+      const inp = Math.max(0, Number(c.inputTokens || 0));
+      const cap = Math.max(0, Number(c.cacheReadTokens ?? c.cacheTokens ?? 0));
+      const cw = Math.max(0, Number(c.cacheWriteTokens ?? c.cacheCreationInputTokens ?? 0));
+      const out = Math.max(0, Number(c.outputTokens || 0));
+      const promptTotal = inp + cap + cw;
+      const hitPct = promptTotal > 0 ? Number(((cap / promptTotal) * 100).toFixed(1)) : null;
+
+      // 当上一轮上下文超过 12K 且本轮骤降至 72% 以下时，判定触发了 Antigravity 自动压缩
+      const compacted = Boolean(prevPrompt >= 12000 && promptTotal > 0 && promptTotal < prevPrompt * 0.72);
+      const compactDropPct = compacted ? Math.round((1 - promptTotal / prevPrompt) * 100) : 0;
+      if (compacted) compactionCount += 1;
+
+      // 未发生自动压缩但缓存命中率从 >=45% 骤降至 <10% 时，标记为缓存断流重算
+      const cacheDrop = Boolean(!compacted && prevHitPct !== null && prevHitPct >= 45 && promptTotal >= 6000 && hitPct !== null && hitPct < 10);
+      if (cacheDrop) cacheDropCount += 1;
+
+      const tpsVal = Number(c.tps);
+      const ttftVal = Number(c.ttftSec ?? (Number.isFinite(Number(c.ttftMs)) ? Number(c.ttftMs) / 1000 : NaN));
+      const durVal = Number(c.durationSec ?? (Number.isFinite(Number(c.durationMs)) ? Number(c.durationMs) / 1000 : NaN));
+      const rawModel = c.modelLabel || c.model || c.modelExactId || '';
+      const grouped = rawModel ? groupProductSafe({ modelId: c.modelExactId || rawModel, label: rawModel }) : null;
+      const modelLabel = (grouped?.label && grouped.productKey !== 'unknown') ? grouped.label : (rawModel || 'Model');
+
+      turns.push({
+        turn: i + 1,
+        modelLabel,
+        promptTotal,
+        prevPrompt,
+        freshInput: inp + cw,
+        cacheRead: cap,
+        outputTokens: out,
+        hitPct,
+        compacted,
+        compactDropPct,
+        cacheDrop,
+        tps: Number.isFinite(tpsVal) && tpsVal > 0 ? Number(tpsVal.toFixed(1)) : null,
+        ttftSec: Number.isFinite(ttftVal) && ttftVal >= 0 ? Number(ttftVal.toFixed(2)) : null,
+        durationSec: Number.isFinite(durVal) && durVal > 0 ? Number(durVal.toFixed(1)) : null,
+        costUSD: Number(c.costUSD || 0)
+      });
+
+      prevPrompt = promptTotal;
+      prevHitPct = hitPct;
+    }
+
+    return { turns, compactionCount, cacheDropCount };
+  }
+
   function renderAuditSheet() {
     const l = state.latest;
     const cs = computeSessionCacheStats();
+    const timeline = buildSessionTurnTimeline(state.sessionCalls);
     const scanEstHigh = state.scan?.session?.total?.high || state.scan?.estimatedTotal || null;
 
     // Layer 1: Whole-Session Cumulative Cache Overview Banner
     if (el('audSessTurnTag')) {
       el('audSessTurnTag').textContent = cs.promptTurnCount > 0 ? `共 ${cs.promptTurnCount} 轮请求` : '0 轮请求';
+    }
+    if (el('audCompactionTag')) {
+      el('audCompactionTag').hidden = timeline.compactionCount === 0;
+      el('audCompactionTag').textContent = `压缩 ${timeline.compactionCount} 次`;
     }
     if (cs.sessHitPct === null) {
       if (el('audSessCachePct')) { el('audSessCachePct').textContent = '--%'; el('audSessCachePct').style.color = 'var(--fg-2)'; }
@@ -2813,9 +3517,8 @@
     } else {
       const sessTotInp = cs.sessFreshInp + cs.sessCacheRead;
       const sessColor = cs.sessHitPct >= 50 ? 'var(--emerald)' : (cs.sessHitPct >= 20 ? 'var(--amber)' : 'var(--fg-2)');
-      const sessSavedStr = cs.sessSavedUSD >= 0.01 ? cs.sessSavedUSD.toFixed(2) : cs.sessSavedUSD.toFixed(3);
       if (el('audSessCachePct')) { el('audSessCachePct').textContent = `${cs.sessHitPct.toFixed(1)}%`; el('audSessCachePct').style.color = sessColor; }
-      if (el('audSessSavedBadge')) { el('audSessSavedBadge').textContent = `累计省 $${sessSavedStr}`; el('audSessSavedBadge').style.color = sessColor; }
+      if (el('audSessSavedBadge')) { el('audSessSavedBadge').textContent = formatCacheSavedText(cs.sessSavedUSD, '累计省', '累计净增'); el('audSessSavedBadge').style.color = cs.sessSavedUSD < -0.0005 ? 'var(--amber)' : sessColor; }
       if (el('audSessCacheBar')) el('audSessCacheBar').style.width = `${Math.min(100, Math.max(3, cs.sessHitPct)).toFixed(1)}%`;
       if (el('audSessTokDetail')) {
         el('audSessTokDetail').textContent = `缓存读取 ${formatK(cs.sessCacheRead)} / 总输入 ${formatK(sessTotInp)} tok (新输入 ${formatK(cs.sessFreshInp)})`;
@@ -2849,9 +3552,8 @@
         rateEl.textContent = `${cs.roundHitPct.toFixed(1)}% · 首轮建库`;
         rateEl.style.color = 'var(--accent-2)';
       } else {
-        const roundSavedStr = cs.roundSavedUSD >= 0.01 ? cs.roundSavedUSD.toFixed(2) : cs.roundSavedUSD.toFixed(3);
-        rateEl.textContent = `${cs.roundHitPct.toFixed(1)}% · 本次省 $${roundSavedStr}`;
-        rateEl.style.color = cs.roundHitPct >= 50 ? 'var(--emerald)' : 'var(--amber)';
+        rateEl.textContent = `${cs.roundHitPct.toFixed(1)}% · ${formatCacheSavedText(cs.roundSavedUSD, '本次省', '本次净增')}`;
+        rateEl.style.color = cs.roundSavedUSD < -0.0005 ? 'var(--amber)' : (cs.roundHitPct >= 50 ? 'var(--emerald)' : 'var(--amber)');
       }
     }
     if (el('audEstTok')) el('audEstTok').textContent = (l?.estimate || scanEstHigh) ? `≈ ${Number(l?.estimate || scanEstHigh).toLocaleString()} tok` : '--';
@@ -2864,9 +3566,49 @@
     if (el('audRuntimeLine')) el('audRuntimeLine').textContent = `通道: ${state.backendSource} · 会话步数: ${state.scan?.session?.steps || state.count}`;
 
     const files = state.scan?.session?.attachments || state.scan?.session?.files || [];
-    if (el('audStepStats')) el('audStepStats').textContent = `${state.scan?.session?.steps || state.count} 步 · ${files.length} 附件`;
+    if (el('audStepStats')) el('audStepStats').textContent = `${timeline.turns.length || state.scan?.session?.steps || state.count} 轮 · ${files.length} 附件`;
+
+    qsa('#audRightSeg .seg-item').forEach(b => b.classList.toggle('on', b.dataset.aright === state.auditRightTab));
+    const timelineEl = el('auditTimelineList');
     const listEl = el('auditFileList');
+    const showTimeline = state.auditRightTab !== 'files';
+    if (timelineEl) {
+      timelineEl.style.display = showTimeline ? 'flex' : 'none';
+      if (!timeline.turns.length) {
+        timelineEl.innerHTML = '<div style="font-size:11px;color:var(--fg-3);padding:14px 0;text-align:center">完成首次模型响应后自动绘制轮次压缩与缓存波动轨迹</div>';
+      } else {
+        timelineEl.innerHTML = [...timeline.turns].reverse().map((item) => {
+          const rowCls = item.compacted ? 'turn-row compacted' : (item.cacheDrop ? 'turn-row cache-drop' : 'turn-row');
+          let badgeHtml = '';
+          if (item.compacted) {
+            badgeHtml = `<span class="turn-badge compact">自动压缩 -${item.compactDropPct}% (${formatK(item.prevPrompt)}→${formatK(item.promptTotal)})</span>`;
+          } else if (item.cacheDrop) {
+            badgeHtml = `<span class="turn-badge drop">缓存断流 ${item.hitPct !== null ? Math.round(item.hitPct) : 0}%</span>`;
+          } else if (item.hitPct !== null) {
+            badgeHtml = `<span class="turn-badge hit">命中 ${Math.round(item.hitPct)}%</span>`;
+          }
+          const perfParts = [];
+          if (item.ttftSec !== null) perfParts.push(`TTFT ${item.ttftSec.toFixed(1)}s`);
+          if (item.tps !== null) perfParts.push(`${item.tps.toFixed(0)} tok/s`);
+          else if (item.durationSec !== null) perfParts.push(`${item.durationSec.toFixed(1)}s`);
+          const perfTxt = perfParts.length ? perfParts.join(' · ') : (item.costUSD > 0 ? `$${item.costUSD.toFixed(3)}` : '--');
+          return `
+            <div class="${rowCls}">
+              <div class="turn-row-top">
+                <span style="font-weight:600;color:var(--fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">#${item.turn} · ${escapeSvgText(item.modelLabel)}</span>
+                ${badgeHtml}
+              </div>
+              <div class="turn-row-sub mono">
+                <span>输入 ${formatK(item.promptTotal)} · 输出 ${formatK(item.outputTokens)}</span>
+                <span>${escapeSvgText(perfTxt)}</span>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
     if (listEl) {
+      listEl.style.display = showTimeline ? 'none' : 'flex';
       if (!files.length) {
         listEl.innerHTML = `<div style="font-size:11px;color:var(--fg-3);padding:14px 0;text-align:center">${state.scanBusy ? '正在扫描会话归档与附件...' : '当前会话暂无附件记录，可点击下方按钮重扫'}</div>`;
       } else {
@@ -2941,7 +3683,7 @@
         const sym = r.symbol || (core.CURRENCY_SYMBOLS && core.CURRENCY_SYMBOLS[cur]) || `${cur} `;
         const cny = typeof core.convertToCNY === 'function'
           ? Math.round(core.convertToCNY(price, cur) || 0)
-          : Math.round(price * (r.rateToCNY || 7.2));
+          : Math.round(price * (r.rateToCNY || 6.72));
         const onCls = code === state.subRegionCode ? ' on' : '';
         return `
           <button class="country-pill${onCls}" type="button" data-rcode="${escapeSvgText(code)}" data-rcur="${escapeSvgText(cur)}" data-rprice="${price}">
@@ -3102,6 +3844,13 @@
     notify('已完成会话归档与附件重扫');
   });
 
+  qsa('#audRightSeg .seg-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.auditRightTab = btn.dataset.aright === 'files' ? 'files' : 'timeline';
+      renderAuditSheet();
+    });
+  });
+
   // Budget Space Controls
   qsa('#budgetScopeSeg .seg-item').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -3189,8 +3938,9 @@
         body: {}
       });
       if (res?.ok) {
+        if (res.needsRestart) state.restartRequired = true;
         await syncStudioStatuses();
-        notify('已无损恢复官方原版二进制文件');
+        notify(res.needsRestart ? '已恢复原版二进制，请点击「重启生效」完成加载' : '已无损恢复官方原版二进制文件');
       } else {
         notify(res?.error || '无需还原或未找到备份');
       }
@@ -3246,6 +3996,14 @@
     notify('历史 Token 账本与测速样本已更新');
   });
 
+  el('btnExportCsv')?.addEventListener('click', () => {
+    void exportLedgerData('csv');
+  });
+
+  el('btnExportJson')?.addEventListener('click', () => {
+    void exportLedgerData('json');
+  });
+
   qsa('#duelMetricSeg .seg-item').forEach(btn => {
     btn.addEventListener('click', () => {
       state.duelMetric = btn.dataset.dm;
@@ -3267,13 +4025,17 @@
     });
   });
 
+  let subPriceSaveTimer = null;
   el('subPriceInput')?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     if (Number.isFinite(v) && v >= 0) {
       state.subPrice = v;
       renderSubscriptionSheet();
       renderLedgerSpace();
-      void persistUiAndPlanSettings();
+      clearTimeout(subPriceSaveTimer);
+      subPriceSaveTimer = setTimeout(() => {
+        if (!state.disposed) void persistUiAndPlanSettings();
+      }, 350);
     }
   });
 
@@ -3298,7 +4060,13 @@
         liveRoute: '/enhance-apply',
         body: { promptTier: state.promptTier, chineseTitle: state.zhChatTitle }
       });
-      notify(res?.ok ? `已应用 Lv.${state.promptTier} 提示词增强补丁` : (res?.error || '应用增强失败'));
+      if (res?.ok) {
+        if (res.needsRestart) state.restartRequired = true;
+        await syncStudioStatuses();
+        notify(res.needsRestart ? `已写入 Lv.${state.promptTier} 增强补丁，重启语言服务或客户端后生效` : `已应用 Lv.${state.promptTier} 提示词增强补丁`);
+      } else {
+        notify(res?.error || '应用增强失败');
+      }
     } catch (e) {
       notify(e?.message || '应用增强异常');
     }
@@ -3316,8 +4084,9 @@
       if (res?.ok) {
         state.promptTier = 0;
         state.zhChatTitle = false;
-        renderStudioSpace();
-        notify('已恢复官方原版提示词与标题策略');
+        if (res.needsRestart) state.restartRequired = true;
+        await syncStudioStatuses();
+        notify(res.needsRestart ? '已恢复原版提示词与标题策略，重启客户端后生效' : '已恢复官方原版提示词与标题策略');
       } else {
         notify(res?.error || '恢复失败');
       }
@@ -3326,43 +4095,46 @@
     }
   });
 
-  el('toggleProxyMod')?.addEventListener('click', async () => {
-    const nextEnable = !state.proxyEnabled;
-    const urlVal = el('proxyUrlInput')?.value?.trim() || state.proxyUrl;
-    state.proxyUrl = urlVal;
-    try {
-      const res = await callBackend({
-        ipcFn: typeof globalThis.contextMeterAPI?.toggleModule === 'function'
-          ? () => globalThis.contextMeterAPI.toggleModule('proxy', nextEnable, { proxyUrl: urlVal })
-          : null,
-        liveRoute: '/toggle-module',
-        body: { name: 'proxy', enable: nextEnable, opts: { proxyUrl: urlVal } }
-      });
-      if (res?.ok) {
-        state.proxyEnabled = nextEnable;
-        if (res.restartRequired) state.restartRequired = true;
-        renderStudioSpace();
-        renderCockpit();
-        notify(res.message || (nextEnable ? '已启用免 TUN 代理配置' : '已关闭免 TUN 代理'));
-      } else {
-        notify(res?.error || '切换代理失败');
-      }
-    } catch (e) {
-      notify(e?.message || '切换代理异常');
+  async function persistProxyProfiles(nextProfiles, nextActiveId, nextUrl = state.proxyUrl) {
+    const opts = {
+      proxyUrl: nextUrl,
+      profiles: nextProfiles,
+      activeProfileId: nextActiveId || null
+    };
+    const res = await callBackend({
+      ipcFn: typeof globalThis.contextMeterAPI?.toggleModule === 'function'
+        ? () => globalThis.contextMeterAPI.toggleModule('proxy', state.proxyEnabled, opts)
+        : null,
+      liveRoute: '/toggle-module',
+      body: { name: 'proxy', enable: state.proxyEnabled, opts }
+    });
+    if (res?.ok) {
+      state.proxyUrl = nextUrl;
+      state.proxyProfiles = Array.isArray(res.data?.modules?.proxy?.profiles)
+        ? res.data.modules.proxy.profiles
+        : nextProfiles;
+      state.activeProxyProfileId = res.data?.modules?.proxy?.activeProfileId !== undefined
+        ? res.data.modules.proxy.activeProfileId
+        : (nextActiveId || null);
+      if (res.restartRequired) state.restartRequired = true;
+      renderStudioSpace();
+      renderCockpit();
+      return { ok: true, res };
     }
-  });
+    return { ok: false, res };
+  }
 
-  el('btnPingTopo')?.addEventListener('click', async () => {
-    const urlVal = el('proxyUrlInput')?.value?.trim() || state.proxyUrl;
-    state.proxyUrl = urlVal;
-    notify('正在执行四层代理连通性诊断...');
+  async function runProxyFourLayerDiag(urlVal, silentStart = false) {
+    const targetUrl = String(urlVal || el('proxyUrlInput')?.value?.trim() || state.proxyUrl).trim();
+    state.proxyUrl = targetUrl;
+    if (!silentStart) notify('正在执行四层代理连通性诊断...');
     try {
       const res = await callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.testProxy === 'function'
-          ? () => globalThis.contextMeterAPI.testProxy(urlVal)
+          ? () => globalThis.contextMeterAPI.testProxy(targetUrl)
           : null,
         liveRoute: '/test-proxy',
-        body: { proxyUrl: urlVal }
+        body: { proxyUrl: targetUrl }
       });
       const d = res?.data || res;
       if (d) {
@@ -3378,6 +4150,154 @@
     } catch (e) {
       notify(e?.message || '代理诊断失败');
     }
+  }
+
+  el('toggleProxyMod')?.addEventListener('click', async () => {
+    const nextEnable = !state.proxyEnabled;
+    const urlVal = el('proxyUrlInput')?.value?.trim() || state.proxyUrl;
+    state.proxyUrl = urlVal;
+    const matchedProf = (state.proxyProfiles || []).find(p => String(p.proxyUrl || '').trim() === urlVal);
+    const nextActiveId = matchedProf ? matchedProf.id : null;
+    try {
+      const res = await callBackend({
+        ipcFn: typeof globalThis.contextMeterAPI?.toggleModule === 'function'
+          ? () => globalThis.contextMeterAPI.toggleModule('proxy', nextEnable, { proxyUrl: urlVal, activeProfileId: nextActiveId })
+          : null,
+        liveRoute: '/toggle-module',
+        body: { name: 'proxy', enable: nextEnable, opts: { proxyUrl: urlVal, activeProfileId: nextActiveId } }
+      });
+      if (res?.ok) {
+        state.proxyEnabled = nextEnable;
+        state.activeProxyProfileId = nextActiveId;
+        if (res.restartRequired) state.restartRequired = true;
+        renderStudioSpace();
+        renderCockpit();
+        notify(res.message || (nextEnable ? '已启用免 TUN 代理配置' : '已关闭免 TUN 代理'));
+      } else {
+        notify(res?.error || '切换代理失败');
+      }
+    } catch (e) {
+      notify(e?.message || '切换代理异常');
+    }
+  });
+
+  el('btnPingTopo')?.addEventListener('click', () => {
+    void runProxyFourLayerDiag(el('proxyUrlInput')?.value?.trim() || state.proxyUrl, false);
+  });
+
+  el('proxyProfileBar')?.addEventListener('click', async (e) => {
+    const delTarget = e.target?.closest?.('[data-del-prof]');
+    if (delTarget) {
+      e.stopPropagation();
+      const delId = delTarget.dataset.delProf;
+      const targetProf = (state.proxyProfiles || []).find(p => p.id === delId);
+      const nextProfiles = (state.proxyProfiles || []).filter(p => p.id !== delId);
+      const nextActiveId = state.activeProxyProfileId === delId ? null : state.activeProxyProfileId;
+      try {
+        const out = await persistProxyProfiles(nextProfiles, nextActiveId, state.proxyUrl);
+        notify(out.ok ? `已删除代理预设「${targetProf?.name || delId}」` : (out.res?.error || '删除预设失败'));
+      } catch (err) {
+        notify(err?.message || '删除预设异常');
+      }
+      return;
+    }
+
+    const addBtn = e.target?.closest?.('[data-add-prof]');
+    if (addBtn) {
+      state.proxyProfileEditorOpen = !state.proxyProfileEditorOpen;
+      renderProxyProfiles();
+      if (state.proxyProfileEditorOpen) {
+        el('proxyProfileNameInput')?.focus?.();
+      }
+      return;
+    }
+
+    const chip = e.target?.closest?.('[data-prof-id]');
+    if (chip) {
+      const profId = chip.dataset.profId;
+      const prof = (state.proxyProfiles || []).find(p => p.id === profId);
+      if (!prof) return;
+      const pInput = el('proxyUrlInput');
+      if (pInput) pInput.value = prof.proxyUrl;
+      try {
+        const out = await persistProxyProfiles(state.proxyProfiles, prof.id, prof.proxyUrl);
+        if (out.ok) {
+          notify(`已切换代理预设「${prof.name}」，正在执行四层探测...`);
+          void runProxyFourLayerDiag(prof.proxyUrl, true);
+        } else {
+          notify(out.res?.error || '切换代理预设失败');
+        }
+      } catch (err) {
+        notify(err?.message || '切换代理预设异常');
+      }
+    }
+  });
+
+  const saveCurrentProxyAsProfile = async () => {
+    const urlVal = String(el('proxyUrlInput')?.value || state.proxyUrl || '').trim();
+    if (!/^(?:https?|socks5h?|socks4):\/\//i.test(urlVal)) {
+      notify('请输入合法的代理地址（支持 http / https / socks5）');
+      return;
+    }
+    const nameInput = el('proxyProfileNameInput');
+    let name = String(nameInput?.value || '').trim().slice(0, 32);
+    if (!name) {
+      try {
+        const u = new URL(urlVal);
+        name = `${u.hostname}${u.port ? ':' + u.port : ''}`.slice(0, 32);
+      } catch {
+        name = `节点 ${(state.proxyProfiles || []).length + 1}`;
+      }
+    }
+    const existingIdx = (state.proxyProfiles || []).findIndex(
+      p => String(p.name || '').trim().toLowerCase() === name.toLowerCase()
+    );
+    const nextProfiles = [...(state.proxyProfiles || [])];
+    let savedId;
+    if (existingIdx >= 0) {
+      savedId = nextProfiles[existingIdx].id;
+      nextProfiles[existingIdx] = { id: savedId, name, proxyUrl: urlVal };
+    } else {
+      if (nextProfiles.length >= 12) {
+        notify('最多支持保存 12 个代理预设，请先删除旧预设');
+        return;
+      }
+      savedId = `prof_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      nextProfiles.push({ id: savedId, name, proxyUrl: urlVal });
+    }
+    try {
+      const out = await persistProxyProfiles(nextProfiles, savedId, urlVal);
+      if (out.ok) {
+        if (nameInput) nameInput.value = '';
+        state.proxyProfileEditorOpen = false;
+        renderProxyProfiles();
+        notify(`已保存代理预设「${name}」`);
+      } else {
+        notify(out.res?.error || '保存代理预设失败');
+      }
+    } catch (err) {
+      notify(err?.message || '保存代理预设异常');
+    }
+  };
+
+  el('btnConfirmSaveProfile')?.addEventListener('click', () => {
+    void saveCurrentProxyAsProfile();
+  });
+
+  el('proxyProfileNameInput')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void saveCurrentProxyAsProfile();
+    } else if (e.key === 'Escape') {
+      state.proxyProfileEditorOpen = false;
+      renderProxyProfiles();
+    }
+  });
+
+  el('btnCancelSaveProfile')?.addEventListener('click', () => {
+    state.proxyProfileEditorOpen = false;
+    if (el('proxyProfileNameInput')) el('proxyProfileNameInput').value = '';
+    renderProxyProfiles();
   });
 
   el('btnReloadLs')?.addEventListener('click', async () => {
@@ -3434,9 +4354,15 @@
           liveRoute: '/toggle-module',
           body: { name: 'chinese', enable: state.shellLanguage === 'zh-CN', opts: { language: state.shellLanguage, brandTitle: bword } }
         });
-        state.brandTitle = bword;
-        renderStudioSpace();
-        notify(res?.message || '已同步左上角品牌词配置');
+        if (res?.ok) {
+          state.brandTitle = bword;
+          if (res.restartRequired) state.restartRequired = true;
+          renderStudioSpace();
+          renderCockpit();
+          notify(res.message || '已同步左上角品牌词配置');
+        } else {
+          notify(res?.error || '同步品牌词失败');
+        }
       } catch (e) {
         notify(e?.message || '同步品牌词失败');
       }
@@ -3572,6 +4498,80 @@
     }
   });
 
+  /**
+   * 生成脱敏的会话遥测 Markdown 摘要（不含本地路径、会话 ID 或任何令牌），便于一键分享与排查
+   */
+  function buildTelemetryMarkdownSnapshot() {
+    const activeProd = getProductByKey(state.activeProductKey);
+    const activePref = getPreferenceForProduct(activeProd);
+    const configuredTok = resolveEffectiveTokensForProduct(activeProd);
+    const latest = state.latest;
+    const usedTok = Number(latest?.used ?? latest?.actual ?? latest?.estimate ?? 0);
+    const adoptedBudget = Number(latest?.budget || 0);
+    const isCustomConfigured = activePref && activePref.mode !== 'default';
+    const limitTok = isCustomConfigured
+      ? configuredTok
+      : (adoptedBudget > 0 ? adoptedBudget : configuredTok || 256000);
+    const pct = limitTok > 0 ? Math.min(99.9, (usedTok / limitTok) * 100) : 0;
+
+    const cs = computeSessionCacheStats();
+    const timeline = buildSessionTurnTimeline(state.sessionCalls);
+    const modelName = state.activeModelLabel || activeProd?.label || 'Antigravity';
+    const effortPart = state.activeEffort ? ` · ${state.activeEffort}` : '';
+    const ctxSource = latest ? (latest.estimated ? '估算' : '实测') : '待采样';
+
+    const cacheHitTxt = cs.sessHitPct !== null ? `${cs.sessHitPct.toFixed(1)}%` : '--%';
+    const compactTxt = timeline.compactionCount > 0 ? ` · 自动压缩 ${timeline.compactionCount} 次` : '';
+    const speedParts = [];
+    if (Number.isFinite(Number(state.liveTps)) && Number(state.liveTps) > 0) speedParts.push(`${Number(state.liveTps).toFixed(1)} tok/s`);
+    if (Number.isFinite(Number(state.liveTtft)) && Number(state.liveTtft) >= 0) speedParts.push(`TTFT ${Number(state.liveTtft).toFixed(2)}s`);
+    if (Number.isFinite(Number(state.liveOutTok)) && Number(state.liveOutTok) > 0) speedParts.push(`输出 ${formatK(state.liveOutTok)}`);
+    const speedTxt = speedParts.length ? speedParts.join(' · ') : '待采样';
+
+    const pools = extractNormalizedPools(Date.now()).slice(0, 3);
+    const quotaTxt = pools.length
+      ? pools.map((p) => {
+          if (p.noPermission) return `${p.label}: 不可用`;
+          if (Array.isArray(p.buckets) && p.buckets.length > 0) {
+            return `${p.label}: ${p.buckets.map(b => `${b.tag} ${b.pctLabel}`).join(' / ')}`;
+          }
+          return `${p.label}: ${p.pctLabel}`;
+        }).join(' | ')
+      : '同步中';
+
+    const nowLocal = new Date();
+    const todayStr = `${nowLocal.getFullYear()}-${String(nowLocal.getMonth() + 1).padStart(2, '0')}-${String(nowLocal.getDate()).padStart(2, '0')}`;
+    const days = getFilteredDailySeries();
+    const todayRec = days.find(d => d.date === todayStr);
+    const todayTok = todayRec ? todayRec.total : state.sessionCalls.reduce((s, c) => s + Number(c.totalTokens || 0), 0);
+    const todayCost = todayRec?.costUSD ? todayRec.costUSD : state.sessionCostTotal;
+
+    const lines = [
+      `### Antigravity Pulse v${METER_VERSION} 会话遥测摘要`,
+      `- **当前模型**: ${modelName}${effortPart}`,
+      `- **上下文占用**: ${formatK(usedTok)} / ${formatK(limitTok)} (${pct.toFixed(1)}% · ${ctxSource})`,
+      `- **会话缓存**: 命中 ${cacheHitTxt} · ${formatCacheSavedText(cs.sessSavedUSD, '累计省', '累计净增')} · ${cs.promptTurnCount} 轮${compactTxt}`,
+      `- **最新速度**: ${speedTxt}`,
+      `- **额度池**: ${quotaTxt}`,
+      `- **今日账本**: ${formatCompactTokens(todayTok)} tok · $${Number(todayCost || 0).toFixed(2)}`
+    ];
+    return lines.join('\n');
+  }
+
+  const copyTelemetrySnapshot = async () => {
+    const md = buildTelemetryMarkdownSnapshot();
+    const ok = await copyTextToClipboard(md);
+    notify(ok ? '已复制会话遥测 Markdown 摘要' : '复制失败，当前环境禁止剪贴板写入');
+  };
+
+  el('btnCopySnapshot')?.addEventListener('click', () => {
+    void copyTelemetrySnapshot();
+  });
+
+  el('btnCopyAuditSnap')?.addEventListener('click', () => {
+    void copyTelemetrySnapshot();
+  });
+
   function onDocClick(e) {
     if (!state.hudOpen || state.dockMode === 'drawer') return;
     const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
@@ -3580,6 +4580,22 @@
   }
 
   function onDocKeydown(e) {
+    // Alt+Shift+P (macOS Option+Shift+P) 全局快捷呼出/收起 HUD，避开编辑器 Cmd/Ctrl+Shift+P 命令面板冲突
+    const isToggleShortcut = Boolean(
+      e && e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey &&
+      (e.code === 'KeyP' || String(e.key || '').toLowerCase() === 'p')
+    );
+    if (isToggleShortcut) {
+      const activeEl = shadow.activeElement || document.activeElement;
+      const tag = String(activeEl?.tagName || '').toUpperCase();
+      const isEditable = tag === 'INPUT' || tag === 'TEXTAREA' || Boolean(activeEl?.isContentEditable);
+      if (!isEditable) {
+        if (typeof e.preventDefault === 'function') e.preventDefault();
+        toggleHud(!state.hudOpen);
+        return;
+      }
+    }
+
     if (e.key !== 'Escape' || !state.hudOpen) return;
     if (state.openSheetId) {
       el(state.openSheetId)?.classList.remove('open');
@@ -3598,15 +4614,49 @@
   globalThis.addEventListener?.('resize', onWinResize);
 
   // ==================== Main Heartbeat Loop ====================
+  let lastTickAt = Date.now();
+
   function tick() {
     if (state.disposed) return;
-    ensureHostDocked();
-    syncActiveModelIdentity();
+    const now = Date.now();
+    // 检测到系统休眠唤醒（单次心跳间隔超过 45 秒）时，主动刷新节奏与异常额度状态
+    const wokeFromSleep = (now - lastTickAt) > 45000;
+    lastTickAt = now;
+    if (wokeFromSleep) {
+      state.requestNext = 0;
+      state.scanNext = 0;
+      if (state.quotaError || (now - state.quotaFetchedAt) > 60000) {
+        void syncQuotaFromHost(Boolean(state.quotaError));
+      }
+    }
+
+    // 页面隐藏时跳过频繁的 DOM 布局重排与模型按钮扫描，降低后台 CPU 占用
+    if (!document.hidden) {
+      ensureHostDocked();
+      syncActiveModelIdentity();
+    }
 
     const nextRoute = getActiveConversationId();
     if (nextRoute !== state.route) {
       state.route = nextRoute;
       state.generation += 1;
+      // 切换会话时立刻中止上一轮在途请求并递增令牌复位忙锁，彻底根治 requestBusy/scanBusy 永久死锁
+      state.activeRequestToken += 1;
+      state.activeScanToken += 1;
+      if (state.activeRequestCtrl) {
+        try { state.activeRequestCtrl.abort(); } catch {}
+        state.activeRequestCtrl = null;
+      }
+      if (state.activeScanCtrl) {
+        try { state.activeScanCtrl.abort(); } catch {}
+        state.activeScanCtrl = null;
+      }
+      state.requestBusy = false;
+      state.requestStartedAt = 0;
+      state.scanBusy = false;
+      state.scanStartedAt = 0;
+      state.requestError = '';
+      state.scanError = '';
       state.count = 0;
       state.latest = null;
       state.scan = null;
@@ -3627,7 +4677,28 @@
       renderCockpit();
     }
 
-    const now = Date.now();
+    // 看门狗兜底：防止系统休眠或半开 Socket 导致 Promise 长期悬挂不落地
+    if (state.requestBusy && state.requestStartedAt > 0 && (now - state.requestStartedAt) > 25000) {
+      state.activeRequestToken += 1;
+      if (state.activeRequestCtrl) {
+        try { state.activeRequestCtrl.abort(); } catch {}
+        state.activeRequestCtrl = null;
+      }
+      state.requestBusy = false;
+      state.requestStartedAt = 0;
+      state.requestNext = 0;
+    }
+    if (state.scanBusy && state.scanStartedAt > 0 && (now - state.scanStartedAt) > 45000) {
+      state.activeScanToken += 1;
+      if (state.activeScanCtrl) {
+        try { state.activeScanCtrl.abort(); } catch {}
+        state.activeScanCtrl = null;
+      }
+      state.scanBusy = false;
+      state.scanStartedAt = 0;
+      state.scanNext = 0;
+    }
+
     if (state.route) {
       if (!state.requestBusy && now >= state.requestNext) {
         void pollTrajectory(state.generation, state.route);
@@ -3641,6 +4712,21 @@
       renderQuotaSection(now);
     }
   }
+
+  function onVisibilityOrFocusWake() {
+    if (state.disposed || document.hidden) return;
+    const now = Date.now();
+    if (state.requestError || (now - state.requestAt) > 30000) {
+      state.requestNext = 0;
+    }
+    if (state.quotaError || (now - state.quotaFetchedAt) > 60000) {
+      void syncQuotaFromHost(Boolean(state.quotaError));
+    }
+    tick();
+  }
+
+  document.addEventListener?.('visibilitychange', onVisibilityOrFocusWake);
+  globalThis.addEventListener?.('focus', onVisibilityOrFocusWake);
 
   const mainTimer = setInterval(tick, 1000);
   intervals.add(mainTimer);
@@ -3751,7 +4837,21 @@
       switchSpace(sp);
       return state.activeSpace;
     },
+    buildTelemetrySnapshotForTest: () => buildTelemetryMarkdownSnapshot(),
+    buildTurnTimelineForTest: (calls) => buildSessionTurnTimeline(calls || state.sessionCalls),
+    buildLedgerExportForTest: (fmt) => buildLedgerExportData(fmt),
+    setSessionCallsForTest: (calls) => {
+      state.sessionCalls = Array.isArray(calls) ? calls : [];
+      state.sessionCostTotal = state.sessionCalls.reduce((s, c) => s + Number(c?.costUSD || 0), 0);
+      renderAuditSheet();
+      renderCockpit();
+    },
+    setHistoryDataForTest: (data) => {
+      state.historyData = data;
+      renderLedgerSpace();
+    },
     pollTrajectoryForTest: () => pollTrajectory(state.generation, state.route),
+    syncQuotaFromHostForTest: (force = false) => syncQuotaFromHost(force),
     tickForTest: () => tick(),
     isDisposedForTest: () => state.disposed,
     dispose() {
@@ -3764,10 +4864,13 @@
       controllers.clear();
       clearTimeout(toastTimer);
       clearTimeout(autoUpdateTimer);
+      clearTimeout(subPriceSaveTimer);
       uninstallRequestInterceptor();
       document.removeEventListener?.('click', onDocClick, true);
       document.removeEventListener?.('keydown', onDocKeydown);
+      document.removeEventListener?.('visibilitychange', onVisibilityOrFocusWake);
       globalThis.removeEventListener?.('resize', onWinResize);
+      globalThis.removeEventListener?.('focus', onVisibilityOrFocusWake);
       try { host.remove(); } catch {}
     }
   };

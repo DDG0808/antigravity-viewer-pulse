@@ -1,7 +1,7 @@
 {
   "id": "antigravity-viewer-pulse",
   "name": "Antigravity Viewer Pulse",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "uiGeneration": "spatial-bento-v3",
   "repository": "https://github.com/DDG0808/antigravity-viewer-pulse",
   "description": "Spatial Bento telemetry HUD for Antigravity Desktop: progressive session/latest cache hit rate, dual 5h & weekly shared quota pools, verified tok/s output speed, official-update self-healing guard, and SHA-256 verified hot OTA updates.",

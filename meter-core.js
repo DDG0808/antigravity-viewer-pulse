@@ -594,12 +594,13 @@
 
     const usage = lastRetry ? lastRetry.usage : m.usage;
     const input = number(usage?.inputTokens), cached = number(usage?.cacheReadTokens), output = number(usage?.outputTokens);
+    const cacheWrite = number(usage?.cacheWriteTokens) ?? number(usage?.cacheCreationInputTokens) ?? number(usage?.cache_creation_input_tokens);
     const thinking = number(usage?.thinkingOutputTokens), responseTokens = number(usage?.responseOutputTokens);
-    const hasInput = (input || 0) + (cached || 0) > 0;
+    const hasInput = (input || 0) + (cached || 0) + (cacheWrite || 0) > 0;
 
     // 解耦维度：错误发生时不强制归零已有上下文用量
     const prevContext = options.previousValidContext || null;
-    let actual = hasInput && !error ? (input || 0) + (cached || 0) + (output || 0) : null;
+    let actual = hasInput && !error ? (input || 0) + (cached || 0) + (cacheWrite || 0) + (output || 0) : null;
     if (actual === null && prevContext && prevContext.actual != null && !exceeded) {
       actual = prevContext.actual;
     }
@@ -665,8 +666,9 @@
       error,
       errorClassification: classification,
       estimated: actual === null,
-      input: hasInput ? (input || 0) + (cached || 0) : (prevContext?.input || null),
+      input: hasInput ? (input || 0) + (cached || 0) + (cacheWrite || 0) : (prevContext?.input || null),
       cached: hasInput ? (cached ?? 0) : (prevContext?.cached ?? 0),
+      cacheWrite: hasInput ? (cacheWrite ?? 0) : (prevContext?.cacheWrite ?? 0),
       output: output ?? (prevContext?.output ?? null),
       percent: percentVal,
       model,
@@ -947,7 +949,14 @@
     if (str.includes('4-carbon') || str.includes('4 carbon') || str.includes('carbon') || str.includes('m670')) return 'gemini-4-carbon';
     if (str.includes('4-argon') || str.includes('4 argon') || str.includes('argon') || /\bgemini-pro-orchestrator(?:-(?:argon|g1(?:-pro)?))?$/.test(str) || str.includes('m668')) return 'gemini-4-argon';
     if (str.includes('3.1-pro') || str.includes('3.1 pro')) return 'gemini-3.1-pro-preview';
-    if (str.includes('3.5-flash-lite') || str.includes('3.5 flash-lite') || str.includes('flash-lite')) return 'gemini-3.5-flash-lite';
+    // 明确排除 1.5/2.0/2.5/3.0 等旧世代 flash-lite，避免误套 3.5-flash-lite 费率
+    if (
+      str.includes('3.5-flash-lite') ||
+      str.includes('3.5 flash-lite') ||
+      (str.includes('flash-lite') && !/(?:^|[^0-9])(?:1\.5|2\.0|2\.5|3\.0)(?:[^0-9]|$)/.test(str))
+    ) {
+      return 'gemini-3.5-flash-lite';
+    }
     if (str.includes('2.5-pro') || str.includes('2.5 pro')) return 'gemini-2.5-pro';
     if (/(?:opus[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]opus)/.test(str)) return 'claude-opus-5-5';
     if (/(?:sonnet[-_ ]5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])|5[._-]5(?![0-9]|\.[0-9]|[-_](?!20\d{6}(?![0-9]))[0-9])[-_ ]sonnet)/.test(str)) return 'claude-sonnet-5-5';
@@ -1484,6 +1493,7 @@
     let pricedTokens = 0;
     let pricedInputTokens = 0;
     let pricedCacheTokens = 0;
+    let pricedCacheWriteTokens = 0;
     let pricedOutputTokens = 0;
     let pricedThinkingTokens = 0;
     let unpricedTokens = Number(extraUnpricedTokens) || 0;
@@ -1503,6 +1513,7 @@
         pricedTokens += calc.totalTokens;
         pricedInputTokens += (calc.inputTokens || 0);
         pricedCacheTokens += (calc.cacheTokens || 0);
+        pricedCacheWriteTokens += (calc.cacheWriteTokens || 0);
         pricedOutputTokens += (calc.outputTokens || 0);
         pricedThinkingTokens += (calc.thinkingTokens || 0);
         pricedRequestsCount += 1;
@@ -1516,8 +1527,9 @@
         unpricedRequestsCount += 1;
         const inp = Number(req.inputTokens ?? req.input_tokens ?? req.input ?? 0);
         const cap = Number(req.cacheTokens ?? req.cacheReadTokens ?? req.cache_read_tokens ?? req.cached ?? 0);
+        const cw = Number(req.cacheWriteTokens ?? req.cacheCreationInputTokens ?? req.cache_creation_input_tokens ?? 0);
         const outp = Number(req.outputTokens ?? req.output_tokens ?? req.output ?? 0);
-        const tot = inp + cap + outp;
+        const tot = inp + cap + cw + outp;
         unpricedTokens += tot;
         const rawM = extractModelString(req);
         if (!rawM) unpricedReasons.missingModel += 1;
@@ -1566,6 +1578,7 @@
       byCategory: {
         inputTokens: pricedInputTokens,
         cacheTokens: pricedCacheTokens,
+        cacheWriteTokens: pricedCacheWriteTokens,
         outputTokens: pricedOutputTokens,
         thinkingTokens: pricedThinkingTokens
       },
@@ -1659,7 +1672,9 @@
       }
     } else if (row.date && /^\d{4}-\d{2}-\d{2}/.test(String(row.date))) {
       callDate = String(row.date).slice(0, 10);
-      callTimestamp = new Date(callDate).getTime();
+      // 纯 YYYY-MM-DD 字符串在 JS 中按 UTC 午夜解析，在负时区会错位到前一天，改按本地午夜构造
+      const [dy, dm, dd] = callDate.split('-').map(Number);
+      callTimestamp = new Date(dy, dm - 1, dd).getTime();
       dateIsProvisional = Boolean(row.dateIsProvisional || row.dateSource === 'provisional');
       dateSource = dateIsProvisional ? 'provisional' : (row.dateSource || 'explicit_date');
     } else if (source === 'desktop' && typeof window !== 'undefined') {
@@ -1901,7 +1916,7 @@
 
     const normKey = normalizeModelId(modelKey) || 'gemini-3.8-flash';
     const tierRules = GEMINI_PRICING_TABLE[normKey] || GEMINI_PRICING_TABLE['gemini-3.8-flash'];
-    const reqDate = options.pricingDate ? String(options.pricingDate).slice(0, 10) : '2026-11-08';
+    const reqDate = options.pricingDate ? String(options.pricingDate).slice(0, 10) : formatLocalDateStr(new Date());
     let matchedTier = tierRules[0];
     for (const rule of tierRules) {
       if (rule.effectiveTo && reqDate > rule.effectiveTo) continue;
@@ -2556,7 +2571,7 @@
   function normalizeTokenHistoryPayload(payload, options = {}) {
     if (!payload || typeof payload !== 'object') return null;
     const source = options.source || 'all';
-    const pricingDate = options.pricingDate || '2026-11-09';
+    const pricingDate = options.pricingDate || formatLocalDateStr(new Date());
     const modelId = options.modelId || 'gemini-3.8-flash';
 
     const dailyMapBySource = payload.dailyMapBySource && typeof payload.dailyMapBySource === 'object'
@@ -2738,6 +2753,7 @@
   }
 
   const _dailyCostCache = new Map();
+  const MAX_DAILY_COST_CACHE_ENTRIES = 500;
 
   function clearDailyCostCache() {
     _dailyCostCache.clear();
@@ -2773,6 +2789,10 @@
       cacheCost: calc.cacheCostUSD ?? calc.breakdownCostUSD?.cache ?? 0,
       outputCost: calc.outputCostUSD ?? calc.breakdownCostUSD?.output ?? 0
     };
+    if (_dailyCostCache.size >= MAX_DAILY_COST_CACHE_ENTRIES) {
+      const oldestKey = _dailyCostCache.keys().next().value;
+      if (oldestKey !== undefined) _dailyCostCache.delete(oldestKey);
+    }
     _dailyCostCache.set(cacheKey, res);
     return res;
   }
@@ -2859,7 +2879,7 @@
   /**
    * 过滤并筛选可用更新 Release
    */
-  function filterReleases(releasesList, currentVersion = '0.9.1') {
+  function filterReleases(releasesList, currentVersion = '0.10.0') {
     if (!Array.isArray(releasesList)) return [];
     const valid = [];
     for (const rel of releasesList) {

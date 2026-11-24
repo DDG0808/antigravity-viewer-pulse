@@ -35,6 +35,7 @@ const { isValidExternalUrl } = require('./meter-core');
 const { PROJECT_VERSION } = require('./modules-config');
 const {
   LOOPBACK_IPV4,
+  normalizeLoopbackOrigin,
   isAntigravityHubUrl,
   isAntigravityFallbackWorkbenchUrl,
   extractTargetOrigin
@@ -93,10 +94,174 @@ function resolveBootProxySnapshot() {
 const bootProxySnapshot = resolveBootProxySnapshot();
 const bootChineseSnapshots = new Map();
 
+const TOGGLEABLE_MODULES = new Set(['meter', 'chinese', 'proxy']);
+const SAFE_SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+function isPidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (e) {
+    return e?.code === 'EPERM';
+  }
+}
+
+function sanitizeGetSettingsOptions(options) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) return {};
+  const safe = {};
+  if (typeof options.email === 'string' && options.email.trim()) {
+    safe.email = options.email.trim();
+  }
+  return safe;
+}
+
+function sanitizeSaveSettingsPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
+  // 显式白名单过滤渲染层参数，彻底阻断 targetDir / agDir 等任意路径写入
+  const allowedKeys = [
+    'account',
+    'email',
+    'clearPlan',
+    'customPlan',
+    'savedHeatView',
+    'autoCheckUpdate',
+    'panelLanguage',
+    'uiPreferences',
+    'clearContextPreferences',
+    'clearContextPreference',
+    'productKey',
+    'modelId',
+    'contextPreference',
+    'contextPreferences',
+    'contextScopeMode',
+    'contextUnifiedPreference'
+  ];
+  const safe = {};
+  for (const key of allowedKeys) {
+    if (Object.prototype.hasOwnProperty.call(payload, key) && payload[key] !== undefined) {
+      safe[key] = payload[key];
+    }
+  }
+  return safe;
+}
+
+function sanitizeCliLaunchOptions(options) {
+  const safe = {};
+  if (!options || typeof options !== 'object' || Array.isArray(options)) return safe;
+  if (typeof options.model === 'string') safe.model = options.model;
+  if (typeof options.cascadeId === 'string') safe.cascadeId = options.cascadeId;
+  if (typeof options.conversationId === 'string') safe.conversationId = options.conversationId;
+  const rawCwd = typeof options.cwd === 'string' && options.cwd.trim()
+    ? options.cwd.trim()
+    : (typeof options.workspacePath === 'string' && options.workspacePath.trim() ? options.workspacePath.trim() : '');
+  if (rawCwd) {
+    safe.cwd = rawCwd;
+    safe.workspacePath = rawCwd;
+  }
+  if (options.dryRun === true) safe.dryRun = true;
+  return safe;
+}
+
+function sanitizeContextUnlockOptions(options, isWrite = false) {
+  const safe = {};
+  if (options && typeof options === 'object' && !Array.isArray(options)) {
+    if (typeof options.mode === 'string') safe.mode = options.mode;
+    if (Number.isFinite(Number(options.targetBudget))) safe.targetBudget = Number(options.targetBudget);
+    if (Number.isFinite(Number(options.limitTokens))) safe.limitTokens = Number(options.limitTokens);
+    if (typeof options.force === 'boolean') safe.force = options.force;
+    if (Number.isFinite(Number(options.currentBudget))) safe.currentBudget = Number(options.currentBudget);
+    if (Number.isFinite(Number(options.observedBudget))) safe.observedBudget = Number(options.observedBudget);
+    if (Number.isFinite(Number(options.serviceLimit))) safe.serviceLimit = Number(options.serviceLimit);
+    if (typeof options.syncConfigFiles === 'boolean') safe.syncConfigFiles = options.syncConfigFiles;
+    if (typeof options.syncCliConfigs === 'boolean') safe.syncCliConfigs = options.syncCliConfigs;
+  }
+  if (isWrite && safe.syncConfigFiles === undefined) {
+    safe.syncConfigFiles = true;
+  }
+  return safe;
+}
+
+function sanitizeEnhanceStatusOptions(options) {
+  const safe = {};
+  if (options && typeof options === 'object' && !Array.isArray(options)) {
+    if (typeof options.force === 'boolean') safe.force = options.force;
+    if (typeof options.includeContext === 'boolean') safe.includeContext = options.includeContext;
+  }
+  return safe;
+}
+
+function sanitizeEnhanceApplyPayload(payload) {
+  const safe = {};
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    if (payload.promptTier !== undefined && payload.promptTier !== null) safe.promptTier = Number(payload.promptTier);
+    if (typeof payload.chineseTitle === 'boolean') safe.chineseTitle = payload.chineseTitle;
+    if (typeof payload.contextMode === 'string') safe.contextMode = payload.contextMode;
+    if (Number.isFinite(Number(payload.contextBudget))) safe.contextBudget = Number(payload.contextBudget);
+    if (typeof payload.restartLanguageServers === 'boolean') safe.restartLanguageServers = payload.restartLanguageServers;
+  }
+  return safe;
+}
+
+function sanitizeEnhanceRestoreOptions(options) {
+  const safe = {};
+  if (options && typeof options === 'object' && !Array.isArray(options)) {
+    if (typeof options.restartLanguageServers === 'boolean') safe.restartLanguageServers = options.restartLanguageServers;
+  }
+  return safe;
+}
+
+function sanitizeUpdateOptions(options) {
+  // 强制由主进程固定 currentVersion，并剥离 _stateDir/targetPath/platform/arch 等测试或内部参数，防止降级或任意目录代码加载
+  const safe = { currentVersion: PROJECT_VERSION };
+  if (options && typeof options === 'object' && !Array.isArray(options)) {
+    if (options.force === true) safe.force = true;
+    if (typeof options.version === 'string') {
+      const cleaned = options.version.trim().replace(/^v/i, '');
+      if (SAFE_SEMVER_RE.test(cleaned)) safe.version = cleaned;
+    }
+  }
+  return safe;
+}
+
+function sanitizeQuotaOptions(options, fallbackOrigin) {
+  const safe = { origin: fallbackOrigin, backendSource: 'electron-ipc' };
+  if (typeof options === 'boolean') {
+    safe.force = options;
+    return safe;
+  }
+  if (options && typeof options === 'object' && !Array.isArray(options)) {
+    if (options.force === true) safe.force = true;
+    if (typeof options.currentModel === 'string' && options.currentModel.trim()) safe.currentModel = options.currentModel.trim();
+    if (typeof options.browsePoolKey === 'string' && options.browsePoolKey.trim()) safe.browsePoolKey = options.browsePoolKey.trim();
+    const normOrigin = normalizeLoopbackOrigin(options.origin);
+    if (normOrigin) safe.origin = normOrigin;
+  }
+  return safe;
+}
+
+function sanitizeToggleModuleOpts(opts) {
+  const safe = {};
+  if (!opts || typeof opts !== 'object' || Array.isArray(opts)) return safe;
+  if (typeof opts.language === 'string') safe.language = opts.language;
+  if (typeof opts.brandTitle === 'string') safe.brandTitle = opts.brandTitle;
+  if (typeof opts.proxyUrl === 'string') safe.proxyUrl = opts.proxyUrl;
+  if (typeof opts.bypassList === 'string') safe.bypassList = opts.bypassList;
+  if (Array.isArray(opts.profiles)) safe.profiles = opts.profiles;
+  if (typeof opts.activeProfileId === 'string' || opts.activeProfileId === null) safe.activeProfileId = opts.activeProfileId;
+  return safe;
+}
+
+function resolveSenderOrigin(urlObj) {
+  const href = urlObj?.href || '';
+  return normalizeLoopbackOrigin(href) || extractTargetOrigin(href) || (urlObj?.origin && urlObj.origin !== 'null' ? urlObj.origin : '');
+}
+
 function resolveBootChineseSnapshot() {
   const key = String(process.env.AG_METER_STATE_DIR || '__default__');
   if (bootChineseSnapshots.has(key)) return bootChineseSnapshots.get(key);
-  let snap = { enabled: false, language: 'en' };
+  let snap = { enabled: false, language: 'en', brandTitle: 'english', runtimeLoaded: false };
   try {
     const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
     const cfg = loadModulesConfig();
@@ -104,9 +269,13 @@ function resolveBootChineseSnapshot() {
     const ch = cfg?.modules?.chinese || {};
     const diskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
     const active = Boolean(ch.enabled && String(ch.language || '').toLowerCase() !== 'en' && diskReady);
+    const brandTitle = String(ch.brandTitle || 'english');
     snap = {
       enabled: active,
-      language: String(ch.language || (ch.enabled ? 'zh-CN' : 'en'))
+      language: String(ch.language || (ch.enabled ? 'zh-CN' : 'en')),
+      brandTitle,
+      // preload 在 !enabled && brandTitle==='english' 时会提前 return，不会加载 i18n-runtime
+      runtimeLoaded: Boolean(diskReady && (active || brandTitle !== 'english'))
     };
   } catch {}
   bootChineseSnapshots.set(key, snap);
@@ -180,7 +349,9 @@ function getMeterSource() {
           const liveSessPath = path.join(stateDir, '.live-session.json');
           if (fs.existsSync(liveSessPath)) {
             const liveInfo = JSON.parse(fs.readFileSync(liveSessPath, 'utf8'));
-            if (liveInfo && liveInfo.port && liveInfo.token) {
+            const liveVerMatches = !liveInfo?.version || liveInfo.version === rtVer;
+            const liveProcessOk = !liveInfo?.pid || isPidAlive(liveInfo.pid);
+            if (liveInfo && liveInfo.port && liveInfo.token && liveVerMatches && liveProcessOk) {
               liveBootstrap = `window.__AGContextMeterLive = ${JSON.stringify(liveInfo)};\n` +
                 `window.__AGContextMeterHotReloadContext = ${JSON.stringify({ expectedVersion: rtVer, source: 'live-runtime-persist', preferLiveHost: true })};\n`;
             }
@@ -309,7 +480,9 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
   try {
     const { loadModulesConfig, saveModulesConfig, inspectDiskModules } = require('./modules-config');
     const cfg = loadModulesConfig();
-    if (!cfg.modules[moduleName]) throw new Error(`未知的模块标识: ${moduleName}`);
+    if (!TOGGLEABLE_MODULES.has(moduleName) || !cfg.modules[moduleName]) {
+      throw new Error(`未知的模块标识: ${moduleName}`);
+    }
 
     const targetEnable = Boolean(enable);
     const disk = inspectDiskModules(extraOpts?.asarPath || null);
@@ -326,7 +499,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
     })();
 
     if (hasDiskCapability) {
-      resolveBootChineseSnapshot();
+      const bootZh = resolveBootChineseSnapshot();
       const prevChineseEnabled = Boolean(cfg.modules.chinese?.enabled);
       const prevChineseLang = cfg.modules.chinese?.language || (prevChineseEnabled ? 'zh-CN' : 'en');
       if (moduleName === 'proxy' && extraOpts) {
@@ -358,6 +531,28 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         if (typeof extraOpts.bypassList === 'string') {
           cfg.modules.proxy.bypassList = extraOpts.bypassList.trim();
         }
+        if (Array.isArray(extraOpts.profiles)) {
+          const { sanitizeProxyProfiles } = require('./modules-config');
+          const pCheck = sanitizeProxyProfiles(extraOpts.profiles, { strict: true });
+          if (!pCheck.ok) {
+            return {
+              ok: false,
+              status: 'invalid_config',
+              data: cfg,
+              disk,
+              runtime: buildRuntimeModulesMeta(cfg),
+              error: pCheck.error,
+              restartRequired: false
+            };
+          }
+          cfg.modules.proxy.profiles = pCheck.profiles;
+        }
+        if (extraOpts.activeProfileId !== undefined) {
+          const pid = typeof extraOpts.activeProfileId === 'string' ? extraOpts.activeProfileId.trim() : null;
+          cfg.modules.proxy.activeProfileId = pid && Array.isArray(cfg.modules.proxy.profiles) && cfg.modules.proxy.profiles.some(p => p.id === pid)
+            ? pid
+            : null;
+        }
         cfg.modules.proxy.lastUpdated = new Date().toISOString();
       }
 
@@ -378,8 +573,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
       saveModulesConfig(cfg);
       if (moduleName === 'chinese' && extraOpts?.brandTitle !== undefined) {
         try {
-          const utils = require('./utils');
-          const wins = typeof utils.getHubWindows === 'function' ? utils.getHubWindows() : [];
+          const wins = collectAllCandidateWindows();
           for (const w of wins) {
             const wc = getWindowWebContents(w);
             if (wc && !wc.isDestroyed()) {
@@ -395,11 +589,14 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         cfg.modules.chinese.language !== prevChineseLang
       );
       const brandOnlyUpdate = moduleName === 'chinese' && extraOpts?.brandTitle !== undefined && !langChanged;
+      const brandNeedsRestart = brandOnlyUpdate && !bootZh.runtimeLoaded && cfg.modules.chinese.brandTitle !== 'english';
       const restartRequired = moduleName === 'proxy'
         ? Boolean(runtime.proxyNeedsRestart)
-        : (brandOnlyUpdate ? false : Boolean(runtime.chineseNeedsRestart));
+        : (moduleName === 'meter'
+          ? !Boolean(cfg.modules.meter.enabled)
+          : (brandOnlyUpdate ? brandNeedsRestart : Boolean(runtime.chineseNeedsRestart)));
       const isEnabledNow = cfg.modules[moduleName].enabled;
-      const msg = brandOnlyUpdate
+      const msg = (brandOnlyUpdate && !brandNeedsRestart)
         ? '已保存并热同步品牌标题设置'
         : (!restartRequired
           ? '已同步回当前运行状态，无需重启'
@@ -420,25 +617,58 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
     }
 
     if (!targetEnable && !(moduleName === 'chinese' && extraOpts?.brandTitle && extraOpts.brandTitle !== 'english')) {
+      if (moduleName === 'proxy' && extraOpts) {
+        if (typeof extraOpts.proxyUrl === 'string' && extraOpts.proxyUrl.trim()) {
+          const check = validateProxyUrlInput(extraOpts.proxyUrl);
+          if (!check.ok) {
+            return {
+              ok: false,
+              status: 'invalid_config',
+              data: cfg,
+              disk,
+              runtime: buildRuntimeModulesMeta(cfg),
+              error: check.error,
+              restartRequired: false
+            };
+          }
+          cfg.modules.proxy.proxyUrl = check.value;
+        }
+        if (typeof extraOpts.bypassList === 'string') {
+          cfg.modules.proxy.bypassList = extraOpts.bypassList.trim();
+        }
+        if (Array.isArray(extraOpts.profiles)) {
+          const { sanitizeProxyProfiles } = require('./modules-config');
+          const pCheck = sanitizeProxyProfiles(extraOpts.profiles, { strict: true });
+          if (!pCheck.ok) {
+            return {
+              ok: false,
+              status: 'invalid_config',
+              data: cfg,
+              disk,
+              runtime: buildRuntimeModulesMeta(cfg),
+              error: pCheck.error,
+              restartRequired: false
+            };
+          }
+          cfg.modules.proxy.profiles = pCheck.profiles;
+        }
+        if (extraOpts.activeProfileId !== undefined) {
+          const pid = typeof extraOpts.activeProfileId === 'string' ? extraOpts.activeProfileId.trim() : null;
+          cfg.modules.proxy.activeProfileId = pid && Array.isArray(cfg.modules.proxy.profiles) && cfg.modules.proxy.profiles.some(p => p.id === pid)
+            ? pid
+            : null;
+        }
+        cfg.modules.proxy.lastUpdated = new Date().toISOString();
+      }
       cfg.modules[moduleName].enabled = false;
       if (moduleName === 'chinese') {
         cfg.modules.chinese.language = 'en';
         cfg.modules.chinese.brandTitle = 'english';
       }
-      if (moduleName === 'proxy' && extraOpts) {
-        if (typeof extraOpts.proxyUrl === 'string' && extraOpts.proxyUrl.trim()) {
-          cfg.modules.proxy.proxyUrl = extraOpts.proxyUrl.trim();
-        }
-        if (typeof extraOpts.bypassList === 'string') {
-          cfg.modules.proxy.bypassList = extraOpts.bypassList.trim();
-        }
-        cfg.modules.proxy.lastUpdated = new Date().toISOString();
-      }
       saveModulesConfig(cfg);
       if (moduleName === 'chinese' && extraOpts?.brandTitle !== undefined) {
         try {
-          const utils = require('./utils');
-          const wins = typeof utils.getHubWindows === 'function' ? utils.getHubWindows() : [];
+          const wins = collectAllCandidateWindows();
           for (const w of wins) {
             const wc = getWindowWebContents(w);
             if (wc && !wc.isDestroyed()) {
@@ -529,7 +759,7 @@ function registerMeterIpcHandlers(ipcMain) {
   ipcMain.handle('context-meter:scan', async (event, id, force) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return { ok: true, data: await collect(url.origin, id, { force: force === true, supersedePrevious: true }) }; }
+    try { return { ok: true, data: await collect(resolveSenderOrigin(url), id, { force: force === true, supersedePrevious: true }) }; }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -570,11 +800,7 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const collector = require('./meter-collector');
-      const opts = typeof options === 'boolean'
-        ? { force: options }
-        : (options && typeof options === 'object' ? { ...options } : {});
-      if (!opts.origin) opts.origin = url.origin;
-      opts.backendSource = 'electron-ipc';
+      const opts = sanitizeQuotaOptions(options, resolveSenderOrigin(url));
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
       return { ok: true, data: safePayload };
@@ -586,14 +812,14 @@ function registerMeterIpcHandlers(ipcMain) {
   ipcMain.handle('context-meter:get-settings', async (event, options) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return getPluginSettings(options || {}); }
+    try { return getPluginSettings(sanitizeGetSettingsOptions(options)); }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
   ipcMain.handle('context-meter:save-settings', async (event, payload) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return savePluginSettings(payload || {}); }
+    try { return savePluginSettings(sanitizeSaveSettingsPayload(payload)); }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -618,14 +844,7 @@ function registerMeterIpcHandlers(ipcMain) {
         } catch {}
       }
       // 仅透传经过白名单约束的会话与模型参数，防止渲染层异常时通过 cliPath/args/env 拉起任意二进制
-      const safeCliOpts = {};
-      if (options && typeof options === 'object') {
-        if (typeof options.model === 'string') safeCliOpts.model = options.model;
-        if (typeof options.cascadeId === 'string') safeCliOpts.cascadeId = options.cascadeId;
-        if (typeof options.conversationId === 'string') safeCliOpts.conversationId = options.conversationId;
-        if (typeof options.workspacePath === 'string') safeCliOpts.workspacePath = options.workspacePath;
-        if (options.dryRun === true) safeCliOpts.dryRun = true;
-      }
+      const safeCliOpts = sanitizeCliLaunchOptions(options);
       const res = await launchCliSession({
         ...safeCliOpts,
         ownerHwnd: ownerHwndStr,
@@ -683,7 +902,7 @@ function registerMeterIpcHandlers(ipcMain) {
   ipcMain.handle('context-meter:check-update', async (event, options) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return await checkUpdateAsync(options || {}); }
+    try { return await checkUpdateAsync(sanitizeUpdateOptions(options)); }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -691,8 +910,9 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      const updateRes = await applyUpdateAsync(options || {});
-      return await tryInAppHotReloadAfterUpdate(updateRes, options || {});
+      const safeOpts = sanitizeUpdateOptions(options);
+      const updateRes = await applyUpdateAsync(safeOpts);
+      return await tryInAppHotReloadAfterUpdate(updateRes, {});
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -717,7 +937,7 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      return { ok: true, data: await getContextUnlockStatus(undefined, options || {}) };
+      return { ok: true, data: await getContextUnlockStatus(undefined, sanitizeContextUnlockOptions(options, false)) };
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -727,9 +947,7 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      const opts = (options && typeof options === 'object') ? { ...options } : {};
-      if (opts.syncConfigFiles === undefined && !opts.backupDir) opts.syncConfigFiles = true;
-      return await applyContextUnlockAsync(opts);
+      return await applyContextUnlockAsync(sanitizeContextUnlockOptions(options, true));
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -739,15 +957,13 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      const opts = (options && typeof options === 'object') ? { ...options } : {};
-      if (opts.syncConfigFiles === undefined && !opts.backupDir) opts.syncConfigFiles = true;
-      return await restoreContextUnlockAsync(opts);
+      return await restoreContextUnlockAsync(sanitizeContextUnlockOptions(options, true));
     } catch (e) {
       return { ok: false, error: e.message };
     }
   });
 
-  ipcMain.handle('context-meter:restart-host', handleRestartHost);
+  ipcMain.handle('context-meter:restart-host', (event) => handleRestartHost(event, {}));
 
   if (typeof ipcMain.on === 'function') {
     ipcMain.on('context-meter:get-chinese-config-sync', (event) => {
@@ -779,7 +995,7 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const { getEnhanceStatusAsync } = require('./meter-enhance');
-      return { ok: true, data: await getEnhanceStatusAsync(options && typeof options === 'object' ? options : {}) };
+      return { ok: true, data: await getEnhanceStatusAsync(sanitizeEnhanceStatusOptions(options)) };
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -790,7 +1006,7 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const { applyEnhancePatchAsync } = require('./meter-enhance');
-      return await applyEnhancePatchAsync(payload && typeof payload === 'object' ? payload : {});
+      return await applyEnhancePatchAsync(sanitizeEnhanceApplyPayload(payload), {});
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -801,7 +1017,7 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const { restoreAllEnhanceAsync } = require('./meter-enhance');
-      return await restoreAllEnhanceAsync(options && typeof options === 'object' ? options : {});
+      return await restoreAllEnhanceAsync(sanitizeEnhanceRestoreOptions(options));
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -818,8 +1034,10 @@ function registerMeterIpcHandlers(ipcMain) {
     }
   });
 
-  ipcMain.handle('context-meter:modules-status', handleModulesStatus);
-  ipcMain.handle('context-meter:toggle-module', handleToggleModule);
+  ipcMain.handle('context-meter:modules-status', (event) => handleModulesStatus(event, null));
+  ipcMain.handle('context-meter:toggle-module', (event, moduleName, enable, extraOpts) => (
+    handleToggleModule(event, moduleName, enable, sanitizeToggleModuleOpts(extraOpts))
+  ));
 
   ipcMain.handle('context-meter:test-proxy', async (event, proxyUrl) => {
     const url = isLocalMainFrameSender(event);
@@ -877,36 +1095,32 @@ function syncWindowOverlayHeight(win) {
 }
 
 async function ensureMeterInjected(win, options = {}) {
+  const wc = getWindowWebContents(win);
+  // 优先以稳定存在的 webContents 作为计时器键，避免 bindStandaloneWebContents 每次生成的临时 shim 对象逃逸去重
+  const timerKey = wc || win;
+  const scheduleRetry = (delays, errMsg) => {
+    const attempt = Number(options.attempt || 0);
+    if (attempt < delays.length && win && !win.isDestroyed?.() && timerKey) {
+      const prevTimer = injectionTimers.get(timerKey);
+      if (prevTimer) clearTimeout(prevTimer);
+      const t = setTimeout(() => {
+        injectionTimers.delete(timerKey);
+        void ensureMeterInjected(win, { ...options, attempt: attempt + 1 });
+      }, delays[attempt]);
+      injectionTimers.set(timerKey, t);
+    } else if (errMsg) {
+      console.warn('[Context Meter]', errMsg);
+    }
+  };
   try {
     if (!win || win.isDestroyed?.()) return false;
-    const wc = getWindowWebContents(win);
     if (!wc || wc.isDestroyed?.()) {
-      const attempt = Number(options.attempt || 0);
-      const delays = [300, 600, 1000, 1500, 2500];
-      if (attempt < delays.length && win && !win.isDestroyed?.()) {
-        const prevTimer = injectionTimers.get(win);
-        if (prevTimer) clearTimeout(prevTimer);
-        const t = setTimeout(() => {
-          injectionTimers.delete(win);
-          void ensureMeterInjected(win, { ...options, attempt: attempt + 1 });
-        }, delays[attempt]);
-        injectionTimers.set(win, t);
-      }
+      scheduleRetry([300, 600, 1000, 1500, 2500]);
       return false;
     }
     const url = wc.getURL?.() || '';
     if (!isSupportedHostWindowUrl(url)) {
-      const attempt = Number(options.attempt || 0);
-      const delays = [300, 600, 1000, 1500, 2500];
-      if (attempt < delays.length && win && !win.isDestroyed?.()) {
-        const prevTimer = injectionTimers.get(win);
-        if (prevTimer) clearTimeout(prevTimer);
-        const t = setTimeout(() => {
-          injectionTimers.delete(win);
-          void ensureMeterInjected(win, { ...options, attempt: attempt + 1 });
-        }, delays[attempt]);
-        injectionTimers.set(win, t);
-      }
+      scheduleRetry([300, 600, 1000, 1500, 2500]);
       return false;
     }
 
@@ -927,19 +1141,7 @@ async function ensureMeterInjected(win, options = {}) {
     await wc.executeJavaScript(runtimeSource);
     return true;
   } catch (error) {
-    const attempt = Number(options.attempt || 0);
-    const delays = [350, 1000, 2500];
-    if (attempt < delays.length && win && !win.isDestroyed?.()) {
-      const prevTimer = injectionTimers.get(win);
-      if (prevTimer) clearTimeout(prevTimer);
-      const t = setTimeout(() => {
-        injectionTimers.delete(win);
-        void ensureMeterInjected(win, { ...options, attempt: attempt + 1 });
-      }, delays[attempt]);
-      injectionTimers.set(win, t);
-    } else {
-      console.warn('[Context Meter]', error?.message || String(error));
-    }
+    scheduleRetry([350, 1000, 2500], error?.message || String(error));
     return false;
   }
 }
@@ -968,6 +1170,9 @@ function bindStandaloneWebContents(wc) {
   });
   wc.on?.('did-navigate-in-page', () => {
     void ensureMeterInjected(resolveWinOrShim(), { force: false });
+  });
+  wc.on?.('zoom-changed', () => {
+    syncWindowOverlayHeight(resolveWinOrShim());
   });
 }
 
@@ -1059,31 +1264,39 @@ exports.installContextMeter = function (win) {
   }
 };
 
-function scanAndAttachExistingWindows(force = false) {
+function collectAllCandidateWindows() {
   const seen = new Set();
-  const tryAttachList = (list) => {
+  const out = [];
+  const collectList = (list) => {
     if (!Array.isArray(list)) return;
     for (const w of list) {
       if (!w || seen.has(w) || w.isDestroyed?.()) continue;
       seen.add(w);
-      exports.installContextMeter(w);
-      void ensureMeterInjected(w, { force });
+      out.push(w);
     }
   };
   try {
     const utils = require('./utils');
-    if (typeof utils.getHubWindows === 'function') tryAttachList(utils.getHubWindows());
+    if (typeof utils.getHubWindows === 'function') collectList(utils.getHubWindows());
   } catch {}
   try {
     if (BrowserWindowRef && typeof BrowserWindowRef.getAllWindows === 'function') {
-      tryAttachList(BrowserWindowRef.getAllWindows());
+      collectList(BrowserWindowRef.getAllWindows());
     }
   } catch {}
   try {
     if (BaseWindowRef && typeof BaseWindowRef.getAllWindows === 'function') {
-      tryAttachList(BaseWindowRef.getAllWindows());
+      collectList(BaseWindowRef.getAllWindows());
     }
   } catch {}
+  return out;
+}
+
+function scanAndAttachExistingWindows(force = false) {
+  for (const w of collectAllCandidateWindows()) {
+    exports.installContextMeter(w);
+    void ensureMeterInjected(w, { force });
+  }
 }
 
 function bootstrapAutoAttach() {
@@ -1168,10 +1381,7 @@ function shouldInterceptWindowClose(win, options = {}) {
     if (typeof options.getHubWindows === 'function') {
       wins = options.getHubWindows();
     } else {
-      try {
-        const utils = require('./utils');
-        if (typeof utils.getHubWindows === 'function') wins = utils.getHubWindows();
-      } catch {}
+      wins = collectAllCandidateWindows();
     }
 
     if (!Array.isArray(wins) || !wins.includes(win)) return false;
@@ -1206,9 +1416,10 @@ function defaultPostLiveHttpJson(port, token, routePath, origin, body = {}, time
           'X-AG-Context-Token': String(token || '')
         }
       }, res => {
-        let raw = '';
-        res.on('data', c => raw += c);
+        const chunks = [];
+        res.on('data', c => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
         res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf8');
           try { resolve({ statusCode: res.statusCode, ...JSON.parse(raw || '{}') }); }
           catch { resolve({ ok: false, statusCode: res.statusCode }); }
         });
@@ -1223,7 +1434,7 @@ function defaultPostLiveHttpJson(port, token, routePath, origin, body = {}, time
 }
 
 async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
-  if (!updateRes || !updateRes.ok || !updateRes.diskInstalled) {
+  if (!updateRes || !updateRes.ok || (!updateRes.diskInstalled && !updateRes.liveRuntimeUpdated)) {
     return updateRes;
   }
   const targetVer = updateRes.version || updateRes.installedVersion;
@@ -1251,10 +1462,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
   if (typeof options._getHubWindows === 'function') {
     wins = options._getHubWindows() || [];
   } else {
-    try {
-      const utils = require('./utils');
-      wins = typeof utils.getHubWindows === 'function' ? (utils.getHubWindows() || []) : [];
-    } catch {}
+    wins = collectAllCandidateWindows();
   }
   const activeTargets = [];
   for (const w of wins) {
@@ -1375,10 +1583,10 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
 
   try {
     const tmpMain = `${liveSessionPath}.tmp-${process.pid}`;
-    fs.writeFileSync(tmpMain, JSON.stringify(newLiveInfo, null, 2));
+    fs.writeFileSync(tmpMain, JSON.stringify(newLiveInfo, null, 2), { mode: 0o600 });
     fs.renameSync(tmpMain, liveSessionPath);
   } catch {
-    try { fs.writeFileSync(liveSessionPath, JSON.stringify(newLiveInfo, null, 2)); } catch {}
+    try { fs.writeFileSync(liveSessionPath, JSON.stringify(newLiveInfo, null, 2), { mode: 0o600 }); } catch {}
   }
 
   let injectedCount = 0;
@@ -1448,7 +1656,7 @@ true;`;
     if (injectedCount === 0) {
       await shutdownFn(newLiveInfo).catch(() => {});
       if (previousLiveInfo) {
-        try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch {}
+        try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2), { mode: 0o600 }); } catch {}
       }
       return {
         ...updateRes,
@@ -1463,7 +1671,7 @@ true;`;
   if (injectedCount === 0) {
     await shutdownFn(newLiveInfo).catch(() => {});
     if (previousLiveInfo) {
-      try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2)); } catch {}
+      try { fs.writeFileSync(liveSessionPath, JSON.stringify(previousLiveInfo, null, 2), { mode: 0o600 }); } catch {}
     }
     return {
       ...updateRes,
@@ -1485,7 +1693,8 @@ true;`;
     backendVersion: newLiveInfo.version || targetVer,
     backendSource: 'live-host',
     injectedWindowCount: injectedCount,
-    totalWindowCount: activeTargets.length
+    totalWindowCount: activeTargets.length,
+    restartRequired: updateRes.diskInstalled ? Boolean(updateRes.restartRequired) : true
   };
 }
 

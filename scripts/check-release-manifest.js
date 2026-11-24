@@ -114,6 +114,15 @@ function validateManifest(options = {}) {
     throw new Error(`meter-renderer.js 未同步构建: METER_VERSION (${bundleVerMatch?.[1]}) !== ${version}`);
   }
 
+  const installShSrc = fs.readFileSync(path.join(ROOT, 'install.sh'), 'utf8');
+  if (!installShSrc.includes(`(v${version})`)) {
+    throw new Error(`install.sh 横幅版本号未与 package.json (${version}) 同步`);
+  }
+  const installBatSrc = fs.readFileSync(path.join(ROOT, 'install.bat'), 'utf8');
+  if (!installBatSrc.includes(`v${version}`)) {
+    throw new Error(`install.bat 横幅版本号未与 package.json (${version}) 同步`);
+  }
+
   if (!collectorSrc.includes(`const OFFICIAL_REPO = 'DDG0808/antigravity-viewer-pulse';`)) {
     throw new Error('meter-collector.js OFFICIAL_REPO 未指向 DDG0808/antigravity-viewer-pulse');
   }

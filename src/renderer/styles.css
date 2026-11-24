@@ -121,6 +121,11 @@ button, input {
   -webkit-app-region: no-drag;
 }
 
+button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+}
+
 input::-webkit-outer-spin-button,
 input::-webkit-inner-spin-button {
   -webkit-appearance: none;
@@ -171,7 +176,7 @@ input::-webkit-inner-spin-button {
 }
 
 .dynamic-island.active {
-  border-color: rgba(99, 102, 241, 0.5);
+  border-color: var(--accent);
   box-shadow: 0 0 20px -4px var(--accent-glow), var(--rim);
 }
 
@@ -348,6 +353,7 @@ input::-webkit-inner-spin-button {
 
 .pulse-hud.closed {
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
   transform: scale(0.94) translateY(-10px);
 }
@@ -1201,14 +1207,16 @@ input::-webkit-inner-spin-button {
   flex-direction: column;
   gap: 11px;
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
   transform: translateY(16px);
-  transition: opacity 0.22s var(--spring), transform 0.24s var(--spring);
+  transition: opacity 0.22s var(--spring), transform 0.24s var(--spring), visibility 0.22s ease;
   overflow-y: auto;
 }
 
 .glass-sheet.open {
   opacity: 1;
+  visibility: visible;
   pointer-events: auto;
   transform: translateY(0);
 }
@@ -1314,6 +1322,208 @@ input::-webkit-inner-spin-button {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-1);
+}
+
+/* ==================== v0.10.0 新增交互组件样式 ==================== */
+.snap-pill-btn {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--pill-bg);
+  color: var(--fg-2);
+  font-size: 10.5px;
+  font-weight: 550;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.16s ease;
+}
+
+.snap-pill-btn:hover {
+  border-color: var(--line-hi);
+  background: var(--pill-active);
+  color: var(--fg-1);
+}
+
+.mini-export-btn {
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--pill-bg);
+  color: var(--fg-2);
+  font-size: 9.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mini-export-btn:hover {
+  border-color: var(--accent);
+  color: var(--fg-1);
+  background: var(--pill-active);
+}
+
+.model-rank-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  flex: 1;
+  min-height: 0;
+  max-height: 158px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.model-rank-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--well-bg);
+  border: 1px solid var(--line);
+}
+
+.model-rank-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.proxy-profile-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.proxy-profile-chip {
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--well-bg);
+  color: var(--fg-2);
+  font-size: 10px;
+  font-weight: 550;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 150px;
+  transition: all 0.15s ease;
+}
+
+.proxy-profile-chip:hover {
+  border-color: var(--line-hi);
+  color: var(--fg-1);
+}
+
+.proxy-profile-chip.active {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+  color: var(--fg-1);
+}
+
+.proxy-profile-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxy-profile-del {
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.65;
+  padding: 0 1px;
+}
+
+.proxy-profile-del:hover {
+  opacity: 1;
+  color: var(--rose);
+}
+
+.proxy-profile-editor {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.turn-timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  min-height: 0;
+  max-height: 152px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.turn-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  background: var(--pill-bg);
+  border: 1px solid transparent;
+  font-size: 10.5px;
+}
+
+.turn-row.compacted {
+  border-color: rgba(245, 158, 11, 0.48);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.turn-row.cache-drop {
+  border-color: rgba(244, 63, 94, 0.45);
+  background: rgba(244, 63, 94, 0.08);
+}
+
+.turn-row-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+
+.turn-row-sub {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  color: var(--fg-2);
+}
+
+.turn-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 99px;
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.turn-badge.compact {
+  background: rgba(245, 158, 11, 0.2);
+  color: var(--amber);
+}
+
+.turn-badge.drop {
+  background: rgba(244, 63, 94, 0.18);
+  color: var(--rose);
+}
+
+.turn-badge.hit {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--emerald);
 }
 
 /* 轻反馈胶囊 Toast */

@@ -388,6 +388,9 @@ function resolveCliExecutable(customCliPath, options = {}) {
     candidates.push(
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy.exe'), src: 'gemini_bin_exe' },
       { p: path.join(home, '.gemini', 'antigravity', 'bin', 'agy.cmd'), src: 'gemini_bin_cmd' },
+      { p: path.join(home, '.gemini', 'bin', 'agy.exe'), src: 'gemini_root_bin_exe' },
+      { p: path.join(home, '.gemini', 'bin', 'agy.cmd'), src: 'gemini_root_bin_cmd' },
+      { p: path.join(localAppData, 'agy', 'bin', 'agy.exe'), src: 'local_agy_bin_exe' },
       { p: path.join(appData, 'Antigravity', 'bin', 'agy.exe'), src: 'appdata_bin_exe' },
       { p: path.join(appData, 'Antigravity', 'bin', 'agy.cmd'), src: 'appdata_bin_cmd' },
       { p: path.join(localAppData, 'Programs', 'Antigravity IDE', 'bin', 'agy.exe'), src: 'ide_bin_exe' },
@@ -716,23 +719,26 @@ async function launchCliSession(options = {}, ownerHwnd = 0) {
       const probeFile = path.join(stateDir, 'last-cli-cwd.txt');
       try { if (fs.existsSync(probeFile)) fs.unlinkSync(probeFile); } catch {}
 
-      const extraArgsStr = extraArgs.map(a => `"${String(a).replace(/"/g, '')}"`).join(' ');
+      // 清洗 cmd.exe 批处理元字符（&|<>^%!\r\n"），防止参数在 .cmd 脚本展开时触发命令注入
+      const sanitizeCmdArg = (v) => String(v || '').replace(/[\r\n"&|<>^%!]/g, '');
+      const safeModel = sanitizeCmdArg(model);
+      const extraArgsStr = extraArgs.map(a => `"${sanitizeCmdArg(a)}"`).join(' ');
       const batContent = [
         '@echo off',
         'chcp 65001 >nul',
         'if defined AG_CLI_PROBE_FILE (',
         '  > "%AG_CLI_PROBE_FILE%" echo %CD%',
         ')',
-        `"${cliInfo.exePath}" --model "${model}" ${extraArgsStr}`
+        `"${cliInfo.exePath}" --model "${safeModel}" ${extraArgsStr}`
       ].join('\r\n') + '\r\n';
       fs.writeFileSync(runnerBat, batContent, 'utf8');
 
       env.AG_CLI_TARGET_EXE = cliInfo.exePath;
-      env.AG_CLI_TARGET_MODEL = model;
+      env.AG_CLI_TARGET_MODEL = safeModel;
       env.AG_CLI_TARGET_CWD = cwd;
       env.AG_CLI_RUNNER_BAT = runnerBat;
       env.AG_CLI_PROBE_FILE = probeFile;
-      env.AG_CLI_EXTRA_ARGS = extraArgs.map(a => `"${String(a).replace(/"/g, '')}"`).join(' ');
+      env.AG_CLI_EXTRA_ARGS = extraArgsStr;
 
       const resolvedOwnerHwnd = String(options.ownerHwnd || ownerHwnd || 0);
       env.AG_CLI_OWNER_HWND = resolvedOwnerHwnd;

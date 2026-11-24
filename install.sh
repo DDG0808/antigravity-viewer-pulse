@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "=========================================================="
-echo "  Antigravity Pulse · 正式持久化安装与更新自愈配置器 (v0.9.0)"
+echo "  Antigravity Pulse · 正式持久化安装与更新自愈配置器 (v0.10.0)"
 echo "=========================================================="
 
 if ! command -v node >/dev/null 2>&1; then

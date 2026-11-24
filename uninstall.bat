@@ -10,12 +10,12 @@ echo ========================================================
 echo.
 
 where node >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-    node "%~dp0cli.js" teardown %*
-    set "EXIT_CODE=%ERRORLEVEL%"
-    goto :FINISH
-)
+if %ERRORLEVEL% NEQ 0 goto :TRY_ELECTRON
+node "%~dp0cli.js" teardown %*
+set "EXIT_CODE=%ERRORLEVEL%"
+goto :FINISH
 
+:TRY_ELECTRON
 set "AG_EXE="
 if exist "%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe" set "AG_EXE=%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe"
 if not defined AG_EXE if exist "%ProgramFiles%\Antigravity\Antigravity.exe" set "AG_EXE=%ProgramFiles%\Antigravity\Antigravity.exe"

@@ -243,8 +243,13 @@
                   const overrideFields = parseProtoFields(pf.bytesValue);
                   for (const ofield of overrideFields) {
                     if (ofield.wireType === 2 && ofield.bytesValue) {
-                      const s = decodeUtf8Strict(ofield.bytesValue);
-                      if (s && !customModelOverrideRaw) customModelOverrideRaw = s;
+                      // 单个子字段 UTF-8 解码隔离，防止非文本二进制子字段中断循环导致错过 field 15 枚举值
+                      try {
+                        const s = decodeUtf8Strict(ofield.bytesValue);
+                        if (s && !customModelOverrideRaw && /^[\x20-\x7e]{2,128}$/.test(s)) {
+                          customModelOverrideRaw = s;
+                        }
+                      } catch {}
                     } else if (ofield.fieldNumber === 15 && ofield.wireType === 0 && ofield.varintValue !== null) {
                       if (planModelEnum === null) planModelEnum = Number(ofield.varintValue);
                     }

@@ -237,17 +237,25 @@ function acquireSyncFileLock(targetPath, timeoutMs = 15000) {
   try { fs.mkdirSync(path.dirname(lockFile), { recursive: true }); } catch {}
   const start = Date.now();
   while (true) {
+    const lockToken = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
     try {
       const fd = fs.openSync(lockFile, 'wx');
-      fs.writeFileSync(fd, `${process.pid}:${Date.now()}`, 'utf8');
+      fs.writeFileSync(fd, lockToken, 'utf8');
       fs.closeSync(fd);
       return {
         lockFile,
         release: () => {
-          try { fs.unlinkSync(lockFile); } catch {}
+          try {
+            if (fs.readFileSync(lockFile, 'utf8').trim() === lockToken) {
+              fs.unlinkSync(lockFile);
+            }
+          } catch {}
         }
       };
-    } catch {
+    } catch (e) {
+      if (e && e.code !== 'EEXIST') {
+        throw e;
+      }
       if (Date.now() - start >= timeoutMs) {
         throw new Error(`获取文件写锁超时 (${lockFile})`);
       }

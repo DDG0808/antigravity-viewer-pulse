@@ -17,8 +17,8 @@ const { getStateDir } = require('./asar-engine');
 const { safeWriteJsonSync } = require('./meter-storage');
 const { parseAndValidateProxyUrl } = require('./meter-proxy');
 
-const SCHEMA_VERSION = "0.9.1";
-const FALLBACK_PROJECT_VERSION = "0.9.1";
+const SCHEMA_VERSION = "0.10.0";
+const FALLBACK_PROJECT_VERSION = "0.10.0";
 
 function resolveProjectVersion() {
   for (const pkgPath of [
@@ -61,6 +61,8 @@ const DEFAULT_CONFIG = {
       enabled: false,
       proxyUrl: 'http://127.0.0.1:7897',
       bypassList: 'localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,<local>',
+      profiles: [],
+      activeProfileId: null,
       lastTestedAt: null
     },
     enhance: {
@@ -85,6 +87,54 @@ function normalizeClientLanguage(val, enabledHint) {
   if (s === 'en' || s === 'english' || s === 'en-us') return 'en';
   if (enabledHint === true) return 'zh-CN';
   return 'en';
+}
+
+const MAX_PROXY_PROFILES = 12;
+
+/**
+ * 校验并标准化免 TUN 代理多预设列表（最多 12 条，严格校验每条 proxyUrl 合法性并清洗名称与 ID）
+ */
+function sanitizeProxyProfiles(rawList, options = {}) {
+  const strict = options.strict === true;
+  if (!Array.isArray(rawList)) {
+    return strict ? { ok: false, error: '代理预设列表格式非法', profiles: [] } : { ok: true, profiles: [] };
+  }
+  const seenIds = new Set();
+  const out = [];
+  for (let i = 0; i < rawList.length && out.length < MAX_PROXY_PROFILES; i++) {
+    const item = rawList[i];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      if (strict) return { ok: false, error: '代理预设条目格式非法', profiles: [] };
+      continue;
+    }
+    const rawName = String(item.name || '').trim().replace(/[\r\n\t]+/g, ' ').slice(0, 32);
+    const check = parseAndValidateProxyUrl(item.proxyUrl);
+    if (!check.ok) {
+      if (strict) return { ok: false, error: `代理预设「${rawName || i + 1}」地址无效：${check.error}`, profiles: [] };
+      continue;
+    }
+    const baseId = String(item.id || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '')
+      .slice(0, 36) || `prof_${i + 1}`;
+    let id = baseId;
+    let suffix = 2;
+    while (seenIds.has(id)) {
+      id = `${baseId.slice(0, 30)}_${suffix++}`;
+    }
+    seenIds.add(id);
+    const entry = {
+      id,
+      name: rawName || `${check.hostname}:${check.port}`,
+      proxyUrl: check.value
+    };
+    if (typeof item.bypassList === 'string' && item.bypassList.trim()) {
+      entry.bypassList = item.bypassList.trim();
+    }
+    out.push(entry);
+  }
+  return { ok: true, profiles: out };
 }
 
 function resolveModulesStateDir(options = {}) {
@@ -176,6 +226,9 @@ function validateModulesSchema(parsed) {
     if (mods.proxy.proxyUrl !== undefined && mods.proxy.proxyUrl !== null && typeof mods.proxy.proxyUrl !== 'string') {
       return { ok: false, error: '配置文件中 modules.proxy.proxyUrl 必须为字符串' };
     }
+    if (mods.proxy.profiles !== undefined && !Array.isArray(mods.proxy.profiles)) {
+      return { ok: false, error: '配置文件中 modules.proxy.profiles 必须为数组' };
+    }
   }
   if (mods.chinese) {
     if (mods.chinese.enabled !== undefined && typeof mods.chinese.enabled !== 'boolean') {
@@ -229,6 +282,13 @@ function loadModulesConfig(options = {}) {
       current.modules.chinese.brandTitle = normalizeBrandTitle(parsed.modules.chinese?.brandTitle);
       current.modules.chinese.enabled = current.modules.chinese.language === 'zh-CN';
       current.modules.proxy = Object.assign({}, DEFAULT_CONFIG.modules.proxy, parsed.modules.proxy || {});
+      current.modules.proxy.profiles = sanitizeProxyProfiles(parsed.modules.proxy?.profiles, { strict: false }).profiles;
+      const loadedActiveId = typeof parsed.modules.proxy?.activeProfileId === 'string'
+        ? parsed.modules.proxy.activeProfileId.trim()
+        : null;
+      current.modules.proxy.activeProfileId = loadedActiveId && current.modules.proxy.profiles.some(p => p.id === loadedActiveId)
+        ? loadedActiveId
+        : null;
       current.modules.enhance = Object.assign(
         {},
         DEFAULT_CONFIG.modules.enhance,
@@ -299,27 +359,25 @@ function saveModulesConfig(cfg, options = {}) {
  */
 function testSocks5Proxy(host, port, targetHost = null, targetPort = 80, timeoutMs = 2500, auth = null) {
   const net = require('net');
+  const connectHost = String(host || '').replace(/^\[|\]$/g, '');
   const username = auth && auth.username ? decodeURIComponent(auth.username) : '';
   const password = auth && auth.password ? decodeURIComponent(auth.password) : '';
   const hasAuth = Boolean(username || password);
   return new Promise((resolve) => {
     let settled = false;
-    const sock = net.createConnection({ host, port });
+    const sock = net.createConnection({ host: connectHost, port });
     const done = (ok, detail = null) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       try { sock.destroy(); } catch {}
       resolve({ ok, detail });
     };
     const timer = setTimeout(() => done(false, 'timeout'), timeoutMs);
-    sock.setTimeout(timeoutMs, () => {
-      clearTimeout(timer);
-      done(false, 'timeout');
-    });
-    sock.on('error', (e) => {
-      clearTimeout(timer);
-      done(false, e?.code || e?.message || 'socket_error');
-    });
+    sock.setTimeout(timeoutMs, () => done(false, 'timeout'));
+    sock.on('error', (e) => done(false, e?.code || e?.message || 'socket_error'));
+    sock.on('end', () => done(false, 'socks5_unexpected_eof'));
+    sock.on('close', () => done(false, 'socks5_closed_early'));
 
     const sendConnectRequest = () => {
       if (!targetHost) {
@@ -358,13 +416,11 @@ function testSocks5Proxy(host, port, targetHost = null, targetPort = 80, timeout
         chunks = buf.length > 2 ? [buf.subarray(2)] : [];
         if (chosenMethod === 0x02) {
           if (!hasAuth) {
-            clearTimeout(timer);
             return done(false, 'socks5_auth_required');
           }
           const uBuf = Buffer.from(username, 'utf8');
           const pBuf = Buffer.from(password, 'utf8');
           if (uBuf.length > 255 || pBuf.length > 255) {
-            clearTimeout(timer);
             return done(false, 'socks5_auth_too_long');
           }
           stage = 'auth';
@@ -376,6 +432,9 @@ function testSocks5Proxy(host, port, targetHost = null, targetPort = 80, timeout
           pBuf.copy(authPkt, 3 + uBuf.length);
           sock.write(authPkt);
           return;
+        }
+        if (chosenMethod !== 0x00) {
+          return done(false, `socks5_unsupported_method_${chosenMethod}`);
         }
         sendConnectRequest();
         return;
@@ -448,6 +507,8 @@ async function testProxyHealth(proxyUrlStr) {
   const u = new URL(parsedCheck.value);
   const isSocks = parsedCheck.isSocks;
   const port = parsedCheck.port;
+  const connectHost = String(u.hostname || '').replace(/^\[|\]$/g, '');
+  const httpClient = u.protocol === 'https:' ? https : http;
   const socksAuth = (parsedCheck.username || parsedCheck.password)
     ? { username: parsedCheck.username, password: parsedCheck.password }
     : null;
@@ -459,18 +520,19 @@ async function testProxyHealth(proxyUrlStr) {
   try {
     let reachable = false;
     if (isSocks) {
-      const sRes = await testSocks5Proxy(u.hostname, port, null, 80, 2500, socksAuth);
+      const sRes = await testSocks5Proxy(connectHost, port, null, 80, 2500, socksAuth);
       reachable = sRes.ok;
     } else {
       reachable = await new Promise(resolve => {
         let done = false;
         const finish = (v) => { if (!done) { done = true; resolve(v); } };
-        const req = http.request({
-          host: u.hostname,
+        const req = httpClient.request({
+          host: connectHost,
           port: port,
           method: 'CONNECT',
           path: 'www.google.com:443',
           timeout: 2500,
+          ...(u.protocol === 'https:' ? { servername: connectHost } : {}),
           ...(proxyAuthHeader ? { headers: { 'Proxy-Authorization': proxyAuthHeader } } : {})
         });
         req.on('connect', (_res, socket) => {
@@ -503,18 +565,19 @@ async function testProxyHealth(proxyUrlStr) {
   try {
     let internetOk = false;
     if (isSocks) {
-      const netRes = await testSocks5Proxy(u.hostname, port, 'www.google.com', 80, 3500, socksAuth);
+      const netRes = await testSocks5Proxy(connectHost, port, 'www.google.com', 80, 3500, socksAuth);
       internetOk = netRes.ok;
     } else {
       internetOk = await new Promise(resolve => {
         let done = false;
         const finish = (v) => { if (!done) { done = true; resolve(v); } };
-        const req = http.request({
-          host: u.hostname,
+        const req = httpClient.request({
+          host: connectHost,
           port: port,
           method: 'GET',
           path: 'http://www.google.com/generate_204',
           timeout: 3500,
+          ...(u.protocol === 'https:' ? { servername: connectHost } : {}),
           headers: {
             Host: 'www.google.com',
             ...(proxyAuthHeader ? { 'Proxy-Authorization': proxyAuthHeader } : {})
@@ -569,17 +632,26 @@ function acquireFileLock(targetPath, timeoutMs = 12000) {
   const lockFile = path.join(locksDir, `${safeBase}-${targetHash}.lock`);
   const start = Date.now();
   while (true) {
+    const lockToken = `${process.pid}:${Date.now()}:${crypto.randomBytes(4).toString('hex')}`;
     try {
       const fd = fs.openSync(lockFile, 'wx');
-      fs.writeSync(fd, `${process.pid}:${Date.now()}`);
+      fs.writeSync(fd, lockToken);
       fs.closeSync(fd);
       return {
         lockFile,
         release: () => {
-          try { fs.unlinkSync(lockFile); } catch {}
+          try {
+            // 仅在锁文件仍属于当前持有令牌时删除，防止超时被清理后误删后来者持有的新锁
+            if (fs.readFileSync(lockFile, 'utf8').trim() === lockToken) {
+              fs.unlinkSync(lockFile);
+            }
+          } catch {}
         }
       };
     } catch (e) {
+      if (e && e.code !== 'EEXIST') {
+        throw e;
+      }
       if (Date.now() - start >= timeoutMs) {
         throw new Error(`获取目标文件互斥锁超时 (${lockFile})：当前有其他安装或卸载任务正在操作该目标。`);
       }
@@ -823,6 +895,7 @@ module.exports = {
   DEFAULT_CONFIG,
   normalizeBrandTitle,
   normalizeClientLanguage,
+  sanitizeProxyProfiles,
   parseAndValidateProxyUrl,
   getModulesConfigPath,
   loadModulesConfig,

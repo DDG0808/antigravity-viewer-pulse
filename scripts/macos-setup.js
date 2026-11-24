@@ -22,6 +22,7 @@ const { LOOPBACK_IPV4 } = require('../local-api');
 
 const GUARD_LABEL = 'com.antigravity.pulse.guard';
 const DAEMON_LABEL = 'com.antigravity.pulse.daemon';
+const WIN_GUARD_TASK_NAME = 'AntigravityPulseUpdateGuard';
 
 /**
  * 解析稳定的 Node.js 可执行入口路径（优先选用 /opt/homebrew/bin/node 等软链而非易随小版本升级失效的 Cellar 版本目录）
@@ -53,11 +54,14 @@ function resolveStableNodeBinary(execPath = process.execPath) {
 }
 
 function resolveAppBundleFromAsar(asarPath) {
-  if (asarPath && process.platform === 'darwin') {
-    const m = String(asarPath).match(/^(.+?\.app)\/Contents\/Resources\/app\.asar$/i);
-    if (m && m[1] && fs.existsSync(m[1])) return m[1];
+  if (process.platform === 'darwin') {
+    if (asarPath) {
+      const m = String(asarPath).match(/^(.+?\.app)\/Contents\/Resources\/app\.asar$/i);
+      if (m && m[1] && fs.existsSync(m[1])) return m[1];
+    }
+    return '/Applications/Antigravity.app';
   }
-  return '/Applications/Antigravity.app';
+  return asarPath || '';
 }
 
 function isAntigravityProcessAlive() {
@@ -228,6 +232,167 @@ function buildDaemonPlistXml({ nodePath, cliPath, logPath }) {
 `;
 }
 
+/**
+ * 生成 Windows 静默更新自愈守护脚本（.cmd + 无黑框 .vbs + 计划任务 XML）
+ * 登录延迟 20 秒 + 每 2 小时轻量巡检一次（已注入时 30ms 内退出，平时 0 常驻内存）
+ */
+function buildWindowsGuardFiles({ nodePath, cliPath, asarPath, logPath, cmdPath, isElectronNode = false }) {
+  const safePath = (p) => String(p || '').replace(/[\r\n"]/g, '');
+  const cmdLines = [
+    '@echo off',
+    'chcp 65001 >nul',
+    isElectronNode ? 'set "ELECTRON_RUN_AS_NODE=1"' : 'set "ELECTRON_RUN_AS_NODE="',
+    `"${safePath(nodePath)}" "${safePath(cliPath)}" guard-sync --path "${safePath(asarPath)}" >> "${safePath(logPath)}" 2>&1`
+  ];
+  const cmdContent = cmdLines.join('\r\n') + '\r\n';
+  const vbsEscapedCmd = safePath(cmdPath).replace(/"/g, '""');
+  const vbsContent = `Set sh = CreateObject("WScript.Shell")\r\nsh.Run """${vbsEscapedCmd}""", 0, False\r\n`;
+  return { cmdContent, vbsContent };
+}
+
+function buildWindowsGuardTaskXml({ vbsPath }) {
+  const escapedVbs = xmlEscape(String(vbsPath || '').replace(/[\r\n"]/g, ''));
+  return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Antigravity Pulse 自动更新自愈守护（客户端官方升级覆盖 app.asar 后自动补装，平时零常驻内存）</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT20S</Delay>
+    </LogonTrigger>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT2H</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <ExecutionTimeLimit>PT2M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>wscript.exe</Command>
+      <Arguments>//B //Nologo &quot;${escapedVbs}&quot;</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+`;
+}
+
+function getWindowsStartupVbsPath() {
+  const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  return path.join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', `${WIN_GUARD_TASK_NAME}.vbs`);
+}
+
+function installWindowsGuardTask({ stateDir, nodePath, cliPath, asarPath, logPath }) {
+  if (process.platform !== 'win32') return { ok: false, method: null };
+  const cmdPath = path.join(stateDir, 'guard-sync.cmd');
+  const vbsPath = path.join(stateDir, 'guard-sync.vbs');
+  const xmlPath = path.join(stateDir, 'guard-task.xml');
+  const isElectronNode = Boolean(process.versions && process.versions.electron);
+  fs.mkdirSync(stateDir, { recursive: true });
+  const { cmdContent, vbsContent } = buildWindowsGuardFiles({
+    nodePath,
+    cliPath,
+    asarPath,
+    logPath,
+    cmdPath,
+    isElectronNode
+  });
+  fs.writeFileSync(cmdPath, cmdContent, 'utf8');
+  fs.writeFileSync(vbsPath, vbsContent, 'utf8');
+  const xmlText = buildWindowsGuardTaskXml({ vbsPath });
+  // Windows schtasks /XML 原生采用 UTF-16LE + BOM，兼容简体中文等任意区域代码页
+  const utf16Buf = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(xmlText, 'utf16le')]);
+  fs.writeFileSync(xmlPath, utf16Buf);
+
+  const sch = spawnSync('schtasks.exe', ['/Create', '/F', '/TN', WIN_GUARD_TASK_NAME, '/XML', xmlPath], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 8000
+  });
+  if (sch.status === 0) {
+    try {
+      const startupVbs = getWindowsStartupVbsPath();
+      if (fs.existsSync(startupVbs)) fs.unlinkSync(startupVbs);
+    } catch {}
+    return { ok: true, method: 'schtasks', taskName: WIN_GUARD_TASK_NAME, vbsPath };
+  }
+
+  // 若企业组策略禁用计划任务，自动降级至当前用户 Startup 目录静默 VBS 入口
+  try {
+    const startupVbs = getWindowsStartupVbsPath();
+    fs.mkdirSync(path.dirname(startupVbs), { recursive: true });
+    fs.writeFileSync(startupVbs, vbsContent, 'utf8');
+    return { ok: true, method: 'startup_vbs', taskName: WIN_GUARD_TASK_NAME, vbsPath: startupVbs };
+  } catch {
+    return { ok: false, method: null, error: sch.stderr || sch.stdout || 'schtasks_failed' };
+  }
+}
+
+function removeWindowsGuardTask(stateDir = getStateDir()) {
+  let removed = false;
+  if (process.platform === 'win32') {
+    try {
+      const del = spawnSync('schtasks.exe', ['/Delete', '/F', '/TN', WIN_GUARD_TASK_NAME], {
+        stdio: 'ignore',
+        windowsHide: true,
+        timeout: 6000
+      });
+      if (del.status === 0) removed = true;
+    } catch {}
+    try {
+      const startupVbs = getWindowsStartupVbsPath();
+      if (fs.existsSync(startupVbs)) {
+        fs.unlinkSync(startupVbs);
+        removed = true;
+      }
+    } catch {}
+  }
+  for (const rel of ['guard-sync.cmd', 'guard-sync.vbs', 'guard-task.xml']) {
+    try {
+      const p = path.join(stateDir, rel);
+      if (fs.existsSync(p)) {
+        fs.unlinkSync(p);
+        removed = true;
+      }
+    } catch {}
+  }
+  return removed;
+}
+
+function isWindowsGuardInstalled() {
+  if (process.platform !== 'win32') return false;
+  try {
+    const q = spawnSync('schtasks.exe', ['/Query', '/TN', WIN_GUARD_TASK_NAME], {
+      stdio: 'ignore',
+      windowsHide: true,
+      timeout: 4000
+    });
+    if (q.status === 0) return true;
+  } catch {}
+  try {
+    return fs.existsSync(getWindowsStartupVbsPath());
+  } catch {
+    return false;
+  }
+}
+
 function reloadLaunchAgent(plistPath, label) {
   if (process.platform !== 'darwin') return false;
   try {
@@ -302,8 +467,10 @@ function createZeroAsarLauncherApp(sourceAppBundle, debugPort = 9222) {
     }
   } catch {}
 
+  // 使用 POSIX 单引号转义路径，彻底避免路径中包含 $ 或反引号时在 bash 中被意外求值
+  const escapedBundle = `'${String(sourceAppBundle || '').replace(/'/g, "'\\''")}'`;
   const launcherScript = `#!/bin/bash
-open -a "${sourceAppBundle.replace(/"/g, '\\"')}" --args --remote-debugging-address=${LOOPBACK_IPV4} --remote-debugging-port=${debugPort}
+open -a ${escapedBundle} --args --remote-debugging-address=${LOOPBACK_IPV4} --remote-debugging-port=${Number(debugPort) || 9222}
 `;
   const binPath = path.join(macosDir, 'launcher');
   fs.writeFileSync(binPath, launcherScript, { encoding: 'utf8', mode: 0o755 });
@@ -358,9 +525,10 @@ async function runFormalSetup(options = {}) {
   const zeroAsarOnly = Boolean(options.zeroAsar);
   const skipRelaunch = Boolean(options.noRelaunch);
 
-  // 1. 确保前端渲染包为最新构建产物
+  // 1. 仅在源码完整存在（开发目录/完整发布包）时重建渲染包；在 live-runtime 归档目录中复用预构建的 meter-renderer.js
   const buildScript = path.join(rootDir, 'scripts', 'build-renderer.js');
-  if (fs.existsSync(buildScript)) {
+  const rendererMainSrc = path.join(rootDir, 'src', 'renderer', 'main.js');
+  if (fs.existsSync(buildScript) && fs.existsSync(rendererMainSrc)) {
     const { buildRenderer } = require(buildScript);
     buildRenderer({ rootDir });
   }
@@ -369,7 +537,7 @@ async function runFormalSetup(options = {}) {
   const appBundle = resolveAppBundleFromAsar(asarPath);
   const stateDir = getStateDir();
 
-  // 2. 归档独立运行时到 ~/Library/Application Support/AntigravityContextMeter/live-runtime
+  // 2. 归档独立运行时到系统应用支持目录 (live-runtime)
   const runtimeDir = syncFormalRuntimeDir(rootDir, stateDir);
   const runtimeCliPath = path.join(runtimeDir, 'cli.js');
   const cliLink = installGlobalCliSymlink(runtimeCliPath);
@@ -386,7 +554,12 @@ async function runFormalSetup(options = {}) {
       console.log('⏳ 检测到 Antigravity 正在运行，正在通知客户端安全保存并退出...');
       const exited = await quitAntigravityGracefully(7000);
       if (!exited) {
-        throw new Error('Antigravity 未能在 7 秒内自动退出（可能有未保存对话框），请先按 Cmd+Q 手动退出后再双击运行安装器。');
+        const quitHint = process.platform === 'win32'
+          ? '请先从系统托盘右键完全退出 Antigravity 后再运行 install.bat。'
+          : (process.platform === 'darwin'
+            ? '请先按 Cmd+Q 手动退出后再双击运行安装器。'
+            : '请先完全退出 Antigravity 客户端后再重试。');
+        throw new Error(`Antigravity 未能在 7 秒内自动退出（可能有未保存对话框），${quitHint}`);
       }
     }
 
@@ -394,27 +567,31 @@ async function runFormalSetup(options = {}) {
     const manifest = await install({ path: customPath });
     console.log(`✅ 核心组件已持久化注入: ${manifest.installed} (宿主 v${manifest.version})`);
 
-    // 5. 自动启动客户端并做 3.5 秒健康存活自检（防止未来 macOS ASAR 签名 Fuse 拦截导致打不开）
+    // 5. 自动启动客户端并做健康存活自检（防止未来 macOS ASAR 签名 Fuse 拦截导致启动后秒退）
     let nativeBootHealthy = true;
     if (!skipRelaunch) {
       console.log('🚀 正在启动 Antigravity 并核验原生持久化挂载状态...');
-      const launched = launchAntigravityApp(appBundle);
+      const launchTarget = process.platform === 'darwin' ? appBundle : asarPath;
+      const launched = launchAntigravityApp(launchTarget);
       if (launched && process.platform === 'darwin') {
         await new Promise(r => setTimeout(r, 1400));
-        let aliveChecks = 0;
+        const samples = [];
         for (let i = 0; i < 5; i++) {
-          if (isAntigravityProcessAlive()) aliveChecks++;
+          samples.push(isAntigravityProcessAlive());
           await new Promise(r => setTimeout(r, 450));
         }
-        if (aliveChecks === 0) {
+        // 要求末段采样仍保持存活，避免把“启动 1.8s 后因签名校验闪退”误判为健康
+        const tailAlive = samples.slice(-2).some(Boolean);
+        if (!tailAlive) {
           nativeBootHealthy = false;
         }
       }
     }
 
     if (nativeBootHealthy) {
-      // 注册 0 常驻内存的官方更新自动重装守护 (WatchPaths)
+      // 注册 0 常驻内存的官方更新自动重装守护 (macOS WatchPaths / Windows Task Scheduler)
       try { fs.rmSync(path.join(stateDir, '.zero-asar-mode.json'), { force: true }); } catch {}
+      let windowsGuardInfo = null;
       if (process.platform === 'darwin') {
         unloadAndRemoveLaunchAgent(daemonPlistPath);
         fs.mkdirSync(launchAgentsDir, { recursive: true });
@@ -427,6 +604,18 @@ async function runFormalSetup(options = {}) {
         fs.writeFileSync(guardPlistPath, plistXml, 'utf8');
         reloadLaunchAgent(guardPlistPath, GUARD_LABEL);
         console.log(`🛡️  已启用 macOS 官方更新自动守护 (${GUARD_LABEL} · 平时 0 内存占用，客户端自动更新后将自动补装插件)`);
+      } else if (process.platform === 'win32') {
+        windowsGuardInfo = installWindowsGuardTask({
+          stateDir,
+          nodePath: resolveStableNodeBinary(),
+          cliPath: runtimeCliPath,
+          asarPath,
+          logPath: guardLogPath
+        });
+        if (windowsGuardInfo.ok) {
+          const modeLabel = windowsGuardInfo.method === 'schtasks' ? 'Windows 计划任务（登录 + 每 2 小时静默巡检）' : 'Windows 登录静默自检';
+          console.log(`🛡️  已启用 ${modeLabel} (${WIN_GUARD_TASK_NAME} · 平时 0 内存占用，官方更新覆盖后将自动补装)`);
+        }
       }
       if (cliLink) {
         console.log(`🔗 已关联终端命令: ${cliLink}`);
@@ -436,7 +625,8 @@ async function runFormalSetup(options = {}) {
         mode: 'native-asar-with-guard',
         installed: manifest.installed,
         runtimeDir,
-        guardPlistPath: process.platform === 'darwin' ? guardPlistPath : null
+        guardPlistPath: process.platform === 'darwin' ? guardPlistPath : null,
+        windowsGuardTask: windowsGuardInfo?.ok ? windowsGuardInfo.taskName : null
       };
     }
 
@@ -527,8 +717,21 @@ async function runGuardSync(options = {}) {
     }
     return { ok: true, action: 'reinstalled_after_update', version: manifest.version, liveInjected: manifest.liveInjected };
   } catch (err) {
-    console.error(`[GuardSync] 自动补装异常: ${err.message}`);
-    return { ok: false, reason: err.message };
+    const msg = String(err?.message || err || '');
+    if (process.platform === 'win32' && /EBUSY|EPERM|锁定/i.test(msg)) {
+      // Windows 上客户端正在运行锁住 app.asar 时尝试无损热挂载，待下次重启/登录再自动补盘
+      try {
+        const hot = await tryHotInjectDetailed({ source: 'win-guard-sync' });
+        if (hot?.ok) {
+          console.log('[GuardSync] app.asar 当前被占用，已通过 CDP 热恢复运行中窗口（下次退出/登录自动写盘）');
+          return { ok: true, action: 'hot_injected_pending_disk', liveInjected: true };
+        }
+      } catch {}
+      console.log('[GuardSync] app.asar 当前被运行中的 Antigravity 占用，将在下次客户端关闭或登录时自动补装。');
+      return { ok: true, action: 'deferred_asar_locked' };
+    }
+    console.error(`[GuardSync] 自动补装异常: ${msg}`);
+    return { ok: false, reason: msg };
   }
 }
 
@@ -573,9 +776,13 @@ async function runZeroAsarDaemon( hooks = {} ) {
 async function runFormalTeardown(options = {}) {
   const customPath = options.customPath || null;
   const purgeAll = Boolean(options.purge || process.argv.includes('--purge'));
+  const stateDir = getStateDir();
   const launchAgentsDir = getLaunchAgentsDir();
-  const guardRemoved = unloadAndRemoveLaunchAgent(path.join(launchAgentsDir, `${GUARD_LABEL}.plist`));
+  let guardRemoved = unloadAndRemoveLaunchAgent(path.join(launchAgentsDir, `${GUARD_LABEL}.plist`));
   const daemonRemoved = unloadAndRemoveLaunchAgent(path.join(launchAgentsDir, `${DAEMON_LABEL}.plist`));
+  if (process.platform === 'win32') {
+    if (removeWindowsGuardTask(stateDir)) guardRemoved = true;
+  }
 
   if (process.platform === 'darwin') {
     const launcherApp = path.join(os.homedir(), 'Applications', 'Antigravity Pulse.app');
@@ -589,7 +796,6 @@ async function runFormalTeardown(options = {}) {
     if (fs.lstatSync(localBinLink).isSymbolicLink()) fs.unlinkSync(localBinLink);
   } catch {}
 
-  const stateDir = getStateDir();
   const liveSessionPath = path.join(stateDir, '.live-session.json');
   if (fs.existsSync(liveSessionPath)) {
     try {
@@ -599,10 +805,20 @@ async function runFormalTeardown(options = {}) {
   }
 
   let asarRestored = false;
+  let restoreFailedError = null;
   try {
     const asarPath = findAsarPath(customPath);
     const utilsRaw = extractAsarFile(asarPath, 'dist/utils.js').toString('utf8');
-    const hasTraces = utilsRaw.includes('installContextMeter') || utilsRaw.includes(TAGS.METER_UTILS_START) || utilsRaw.includes(TAGS.PROXY_START);
+    let preloadRaw = '';
+    try { preloadRaw = extractAsarFile(asarPath, 'dist/preload.js').toString('utf8'); } catch {}
+    const hasTraces = (
+      utilsRaw.includes('installContextMeter') ||
+      utilsRaw.includes('bootstrapAutoAttach') ||
+      utilsRaw.includes(TAGS.METER_UTILS_START) ||
+      utilsRaw.includes(TAGS.PROXY_START) ||
+      preloadRaw.includes(TAGS.METER_PRELOAD_START) ||
+      preloadRaw.includes(TAGS.CHINESE_START)
+    );
     if (hasTraces) {
       const wasRunning = isAntigravityProcessAlive();
       if (wasRunning) {
@@ -612,13 +828,18 @@ async function runFormalTeardown(options = {}) {
       await restore({ path: customPath });
       asarRestored = true;
       if (wasRunning && !options.noRelaunch) {
-        launchAntigravityApp(asarPath);
+        launchAntigravityApp(process.platform === 'darwin' ? resolveAppBundleFromAsar(asarPath) : asarPath);
       }
     }
   } catch (e) {
     if (!String(e.message || '').includes('installation.json not found')) {
-      console.warn(`⚠️  ASAR 还原提示: ${e.message}`);
+      restoreFailedError = e;
     }
+  }
+
+  // 若 ASAR 仍有补丁残留且还原失败（例如文件被锁定或权限不足），严禁继续清空备份与状态目录，立即报错保护回滚现场
+  if (restoreFailedError) {
+    throw new Error(`ASAR 原版还原失败，已保留本地备份与状态目录以防丢失回滚能力：${restoreFailedError.message}`);
   }
 
   try {
@@ -648,8 +869,14 @@ async function runFormalTeardown(options = {}) {
 module.exports = {
   GUARD_LABEL,
   DAEMON_LABEL,
+  WIN_GUARD_TASK_NAME,
   buildGuardPlistXml,
   buildDaemonPlistXml,
+  buildWindowsGuardFiles,
+  buildWindowsGuardTaskXml,
+  installWindowsGuardTask,
+  removeWindowsGuardTask,
+  isWindowsGuardInstalled,
   syncFormalRuntimeDir,
   runFormalSetup,
   runGuardSync,

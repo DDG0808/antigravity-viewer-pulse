@@ -118,7 +118,15 @@ const PULSE_I18N = {
     unlockReadyInject: '请求级注入就绪',
     unlockPendingRestart: '底座已修补 · 待重启生效',
     unlockDynamicActive: '底座已解锁 DYN',
-    unlockStock256k: '官方默认 256K 锁 (点右下解锁)'
+    unlockStock256k: '官方默认 256K 锁 (点右下解锁)',
+    copySnapBtn: '复制摘要',
+    botModels: '排行',
+    saveProfileConfirm: '保存',
+    cancelBtn: '取消',
+    addProfileBtn: '+ 存为预设',
+    audTimelineTab: '轮次时间线',
+    audAttachTab: '附件明细',
+    emptyModelRank: '暂无已计价模型消费记录，完成对话后自动归集排行'
   },
   'zh-TW': {
     navCockpit: '總覽',
@@ -238,7 +246,15 @@ const PULSE_I18N = {
     unlockReadyInject: '請求級注入就緒',
     unlockPendingRestart: '底座已修補 · 待重啟生效',
     unlockDynamicActive: '底座已解鎖 DYN',
-    unlockStock256k: '官方預設 256K 鎖 (點右下解鎖)'
+    unlockStock256k: '官方預設 256K 鎖 (點右下解鎖)',
+    copySnapBtn: '複製摘要',
+    botModels: '排行',
+    saveProfileConfirm: '儲存',
+    cancelBtn: '取消',
+    addProfileBtn: '+ 存為預設',
+    audTimelineTab: '輪次時間線',
+    audAttachTab: '附件明細',
+    emptyModelRank: '暫無已計價模型消費紀錄，完成對話後自動歸集排行'
   },
   'en': {
     navCockpit: 'Live',
@@ -358,7 +374,15 @@ const PULSE_I18N = {
     unlockReadyInject: 'Request Injection Ready',
     unlockPendingRestart: 'Patched · Restart Needed',
     unlockDynamicActive: 'Base Unlocked DYN',
-    unlockStock256k: 'Default 256K Cap (Unlock Below)'
+    unlockStock256k: 'Default 256K Cap (Unlock Below)',
+    copySnapBtn: 'Snapshot',
+    botModels: 'Models',
+    saveProfileConfirm: 'Save',
+    cancelBtn: 'Cancel',
+    addProfileBtn: '+ Save Preset',
+    audTimelineTab: 'Timeline',
+    audAttachTab: 'Files',
+    emptyModelRank: 'No priced model usage yet — rankings appear automatically after chat turns'
   }
 };
 

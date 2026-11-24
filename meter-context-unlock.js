@@ -878,11 +878,20 @@ function doesSidecarMatchTarget(sidecar, target, container, gate3b) {
 function cleanupOldReplacedFiles(targetDir, targetFileName, excludePath = null) {
   const cleaned = [];
   const retained = [];
+  if (!targetDir) {
+    return { cleaned, retained };
+  }
+  // 兼容旧单参调用 cleanupOldReplacedFiles(fullFilePath)，同时支持 (targetDir, targetFileName)
+  if (!targetFileName && fs.existsSync(targetDir) && fs.statSync(targetDir).isFile()) {
+    targetFileName = path.basename(targetDir);
+    targetDir = path.dirname(targetDir);
+  }
   if (!targetDir || !fs.existsSync(targetDir) || !targetFileName) {
     return { cleaned, retained };
   }
   const escapedName = targetFileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const oldPattern = new RegExp(`^${escapedName}\\.old_\\d+$`, 'i');
+  // 同时匹配 .old_<ts> 与 meter-enhance 产生的 .old_<ts>_<rand5> 临时热替换残留文件
+  const oldPattern = new RegExp(`^${escapedName}\\.old_\\d+(?:_[a-z0-9]+)?$`, 'i');
   try {
     const files = fs.readdirSync(targetDir);
     for (const f of files) {
@@ -906,9 +915,12 @@ function cleanupOldReplacedFiles(targetDir, targetFileName, excludePath = null) 
 /**
  * 进程状态缓存（短生命周期，避免面板快速连续刷新触发重复进程枚举）
  */
-let cachedProcInfo = null;
-let cachedProcAt = 0;
-let inFlightProcQuery = null;
+const procCacheByTarget = new Map();
+const inFlightProcQueryByTarget = new Map();
+
+function normalizeProcTargetKey(targetPath) {
+  return targetPath ? path.resolve(String(targetPath)).toLowerCase() : '__default__';
+}
 
 /**
  * 辅助检查文件独占写锁（耗时 < 0.2ms，仅作为辅助信号，不能直接代表进程正在运行）
@@ -926,16 +938,18 @@ function checkFileWriteLock(filePath) {
 
 /**
  * 纯异步获取运行中 language_server 进程的详细信息（PID、路径、启动时间毫秒）
- * 包含：并发去重 (In-flight Promise 复用)、2.5s 短期缓存、3000ms 超时控制，绝不阻塞主进程事件循环
+ * 包含：按目标路径隔离的并发去重 (In-flight Promise 复用)、2.5s 短期缓存、3000ms 超时控制，绝不阻塞主进程事件循环
  */
 async function getRunningLanguageServerInfoAsync(targetPath, forceRefresh = false) {
+  const procKey = normalizeProcTargetKey(targetPath);
   const now = Date.now();
-  if (!forceRefresh && cachedProcInfo && (now - cachedProcAt < 2500)) {
-    return cachedProcInfo;
+  const cachedEntry = procCacheByTarget.get(procKey);
+  if (!forceRefresh && cachedEntry && (now - cachedEntry.at < 2500)) {
+    return cachedEntry.info;
   }
 
-  if (inFlightProcQuery) {
-    return inFlightProcQuery;
+  if (inFlightProcQueryByTarget.has(procKey)) {
+    return inFlightProcQueryByTarget.get(procKey);
   }
 
   const queryPromise = (async () => {
@@ -1018,10 +1032,13 @@ async function getRunningLanguageServerInfoAsync(targetPath, forceRefresh = fals
         const binName = targetPath ? path.basename(targetPath) : 'language_server';
         const res = await new Promise((resolve, reject) => {
           execFile('pgrep', ['-f', binName], { encoding: 'utf8', timeout: 2000 }, (err, out) => {
-            if (err) reject(err); else resolve(out);
+            // pgrep 返回码 1 表示“未找到匹配进程”而非查询出错，按未运行处理
+            if (err && Number(err.code) === 1) resolve('');
+            else if (err) reject(err);
+            else resolve(out);
           });
         });
-        const pids = String(res || '').trim().split(/\s+/).map(Number).filter(Boolean);
+        const pids = String(res || '').trim().split(/\s+/).map(Number).filter(n => Number.isInteger(n) && n > 0 && n !== process.pid);
         if (pids.length > 0) {
           result.isRunning = true;
           result.pids = pids;
@@ -1046,16 +1063,17 @@ async function getRunningLanguageServerInfoAsync(targetPath, forceRefresh = fals
       }
     }
 
-    cachedProcInfo = result;
-    cachedProcAt = Date.now();
+    procCacheByTarget.set(procKey, { info: result, at: Date.now() });
     return result;
   })();
 
-  inFlightProcQuery = queryPromise;
+  inFlightProcQueryByTarget.set(procKey, queryPromise);
   try {
     return await queryPromise;
   } finally {
-    inFlightProcQuery = null;
+    if (inFlightProcQueryByTarget.get(procKey) === queryPromise) {
+      inFlightProcQueryByTarget.delete(procKey);
+    }
   }
 }
 
@@ -1063,18 +1081,21 @@ async function getRunningLanguageServerInfoAsync(targetPath, forceRefresh = fals
  * 同步快速获取进程状态（优先使用短期缓存或仅检查文件锁，绝不发起同步 powershell 阻塞主进程）
  */
 function getRunningLanguageServerInfo(targetPath, forceRefresh = false) {
+  const procKey = normalizeProcTargetKey(targetPath);
   const now = Date.now();
-  if (!forceRefresh && cachedProcInfo && (now - cachedProcAt < 2500)) {
-    return cachedProcInfo;
+  const cachedEntry = procCacheByTarget.get(procKey);
+  if (!forceRefresh && cachedEntry && (now - cachedEntry.at < 2500)) {
+    return cachedEntry.info;
   }
+  const prevInfo = cachedEntry?.info || null;
   const isLocked = checkFileWriteLock(targetPath);
   return {
     isRunning: isLocked,
     locked: isLocked,
-    pid: cachedProcInfo?.pid || null,
+    pid: prevInfo?.pid || null,
     path: targetPath || null,
-    startTimeMs: cachedProcInfo?.startTimeMs || null,
-    pids: cachedProcInfo?.pids || [],
+    startTimeMs: prevInfo?.startTimeMs || null,
+    pids: prevInfo?.pids || [],
     isUnknown: isLocked ? true : false,
     isSyncFallback: true
   };
@@ -1415,6 +1436,10 @@ async function analyzeBinaryAsync(filePath, options = {}) {
         options: sanitizeUnlockWorkerOptions(options)
       });
       if (workerRes && workerRes._workerHandled) {
+        // 将 Worker 计算得到的静态特征回填主线程缓存，避免后续轮询每 2.5s 重复全量读取和哈希 200MB 二进制
+        if (workerRes.staticInfo && !options.expectedLimit) {
+          unlockStaticCache.set(cacheKey, workerRes.staticInfo);
+        }
         return workerRes.result;
       }
     }
@@ -1951,12 +1976,20 @@ function applyUnlock(options = {}) {
     }
   }
 
-  // 若当前为官方原版，首次修改前必须保存完整原版备份与 Gate 3B sidecar
+  // 若当前为官方原版，首次修改前必须保存完整原版备份与 Gate 3B sidecar；
+  // 若已存在同 PE 构建的有效 .orig 备份，说明本次是手术式还原默认后的再次解锁，严禁将已被增强修改的二进制覆写进 .orig
   let manifestToSave = existingManifest && doesManifestMatchContainer(existingManifest, container, targetPath)
     ? { ...existingManifest }
     : null;
+  const hasVerifiedExistingOrigBackup = Boolean(
+    manifestToSave &&
+    manifestToSave.backupPath &&
+    manifestToSave.origSha256 &&
+    fs.existsSync(manifestToSave.backupPath) &&
+    (!manifestToSave.origSize || fs.statSync(manifestToSave.backupPath).size === manifestToSave.origSize)
+  );
 
-  if (analysis.status === 'not_patched') {
+  if (analysis.status === 'not_patched' && !hasVerifiedExistingOrigBackup) {
     const backupFile = path.join(backupDir, `${path.basename(targetPath)}_${beforeSha256.slice(0, 12)}.orig`);
     try {
       fs.copyFileSync(targetPath, backupFile);
@@ -2444,8 +2477,15 @@ async function applyUnlockAsync(options = {}) {
     let manifestToSave = existingManifest && doesManifestMatchContainer(existingManifest, container, targetPath)
       ? { ...existingManifest }
       : null;
+    const hasVerifiedExistingOrigBackupAsync = Boolean(
+      manifestToSave &&
+      manifestToSave.backupPath &&
+      manifestToSave.origSha256 &&
+      fs.existsSync(manifestToSave.backupPath) &&
+      (!manifestToSave.origSize || fs.statSync(manifestToSave.backupPath).size === manifestToSave.origSize)
+    );
 
-    if (analysis.status === 'not_patched') {
+    if (analysis.status === 'not_patched' && !hasVerifiedExistingOrigBackupAsync) {
       const backupFile = path.join(backupDir, `${path.basename(targetPath)}_${beforeSha256.slice(0, 12)}.orig`);
       try {
         await fs.promises.writeFile(backupFile, buf);
@@ -2746,7 +2786,8 @@ function sanitizeUnlockWorkerOptions(options = {}) {
   const keys = [
     'targetPath', 'backupDir', 'enhanceBackupDir', 'homeDir', 'localAppData',
     'stateDir', 'expectedLimit', 'limitTokens', 'mode', 'modeName',
-    'skipSha256', 'skipProcessCheck', 'syncConfigFiles', 'forceRefresh',
+    'skipSha256', 'skipProcessCheck', 'syncConfigFiles', 'syncCliConfigs', 'forceRefresh',
+    'currentBudget', 'observedBudget', 'serviceLimit',
     'contextMode', 'contextLimitTokens'
   ];
   for (const k of keys) {
@@ -2799,7 +2840,6 @@ function getOrStartUnlockWorker(workerScript = __filename) {
   const w = new Worker(targetScript, {
     workerData: { agUnlockWorker: true }
   });
-  w.unref();
   w.on('message', (msg) => {
     if (!msg || !msg.id) return;
     const entry = unlockWorkerPending.get(msg.id);
@@ -2808,7 +2848,7 @@ function getOrStartUnlockWorker(workerScript = __filename) {
     if (entry.timer) clearTimeout(entry.timer);
     if (msg.ok) unlockWorkerConsecutiveFailures = 0;
     scheduleUnlockWorkerIdleCleanup();
-    if (msg.ok) entry.resolve({ _workerHandled: true, result: msg.result });
+    if (msg.ok) entry.resolve({ _workerHandled: true, result: msg.result, staticInfo: msg.staticInfo || null });
     else entry.resolve(null);
   });
   w.on('error', () => {
@@ -2836,6 +2876,8 @@ function getOrStartUnlockWorker(workerScript = __filename) {
     }
     clearAllUnlockWorkerPending(w, null);
   });
+  // Node.js v24 注册 message 监听会隐式 ref MessagePort，必须在事件绑定之后再 unref
+  try { w.unref(); } catch {}
   unlockWorkerInstance = w;
   return w;
 }
@@ -2897,8 +2939,12 @@ if (!isMainThread && workerData && workerData.agUnlockWorker && parentPort) {
     }
     try {
       let result = null;
+      let staticInfo = null;
       if (cmd === 'analyze') {
         result = await analyzeBinaryAsync(payload.filePath, { ...(payload.options || {}), _inWorker: true });
+        if (payload.filePath) {
+          staticInfo = unlockStaticCache.get(path.resolve(payload.filePath).toLowerCase()) || null;
+        }
       } else if (cmd === 'apply') {
         result = await applyUnlockAsync({ ...(payload.options || {}), _inWorker: true });
       } else if (cmd === 'restore') {
@@ -2906,7 +2952,7 @@ if (!isMainThread && workerData && workerData.agUnlockWorker && parentPort) {
       } else {
         throw new Error(`Unknown unlock worker command: ${cmd}`);
       }
-      parentPort.postMessage({ id, ok: true, result });
+      parentPort.postMessage({ id, ok: true, result, staticInfo });
     } catch (err) {
       parentPort.postMessage({ id, ok: false, error: err && err.message ? err.message : String(err) });
     } finally {

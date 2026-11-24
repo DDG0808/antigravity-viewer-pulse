@@ -156,10 +156,13 @@ async function relaunchAntigravityWithCdp(options = {}) {
       spawnSync('taskkill', ['/FI', `PID ne ${process.pid}`, '/IM', 'Antigravity.exe', '/F'], { timeout: 3500, stdio: 'ignore', windowsHide: true });
     } catch {}
     await new Promise(r => setTimeout(r, 600));
+    const cleanEnv = { ...process.env };
+    // 启动图形界面客户端前必须清除 ELECTRON_RUN_AS_NODE，避免借壳模式下 GUI 以纯 Node 进程退出
+    delete cleanEnv.ELECTRON_RUN_AS_NODE;
     const child = spawn(exePath, [
       `--remote-debugging-address=${LOOPBACK_IPV4}`,
       `--remote-debugging-port=${debugPort}`
-    ], { detached: true, stdio: 'ignore', windowsHide: true });
+    ], { detached: true, stdio: 'ignore', windowsHide: true, env: cleanEnv });
     child.unref();
   } else {
     throw new Error('当前系统请先手动使用 --remote-debugging-port=9222 启动 Antigravity，或直接执行 node cli.js install。');
@@ -304,13 +307,19 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
       ? liveRuntimeScript
       : path.join(__dirname, 'live-host.js'));
 
+  const isElectronRuntime = Boolean(process.versions && process.versions.electron);
   const childEnv = {
     ...process.env,
     AG_LIVE_STAMP_PATH: stagingStamp,
     ...(live.cdpPort ? { AG_CDP_PORT: String(live.cdpPort) } : {}),
     ...(expectedOrigins.length ? { AG_LIVE_ORIGINS: JSON.stringify(expectedOrigins) } : {})
   };
-  delete childEnv.ELECTRON_RUN_AS_NODE;
+  // 若当前进程是借用 Antigravity.exe (ELECTRON_RUN_AS_NODE=1) 启动的，拉起 live-host.js 必须保留 ELECTRON_RUN_AS_NODE=1，否则会启动 GUI
+  if (isElectronRuntime) {
+    childEnv.ELECTRON_RUN_AS_NODE = '1';
+  } else {
+    delete childEnv.ELECTRON_RUN_AS_NODE;
+  }
 
   const originsB64 = expectedOrigins.length
     ? Buffer.from(JSON.stringify(expectedOrigins), 'utf8').toString('base64')
@@ -322,7 +331,9 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
   let spawnedPid = null;
   let newInfo = null;
   try {
+    // 借壳 Electron 运行时禁用 WMI Create（WMI 不会继承 ELECTRON_RUN_AS_NODE=1），改走标准 spawn 继承 childEnv
     const canBreakawayWmi = process.platform === 'win32'
+      && !isElectronRuntime
       && process.env.AG_METER_TEST_MODE !== '1'
       && process.env.NODE_ENV !== 'test'
       && !process.env.AG_METER_STATE_DIR;
@@ -406,10 +417,10 @@ async function ensureLiveBridgeIfNeeded(liveSnapshot = null) {
 
   try {
     const tmpMain = `${statePath}.tmp-${process.pid}`;
-    fs.writeFileSync(tmpMain, JSON.stringify(newInfo, null, 2));
+    fs.writeFileSync(tmpMain, JSON.stringify(newInfo, null, 2), { mode: 0o600 });
     fs.renameSync(tmpMain, statePath);
   } catch {
-    try { fs.writeFileSync(statePath, JSON.stringify(newInfo, null, 2)); } catch {}
+    try { fs.writeFileSync(statePath, JSON.stringify(newInfo, null, 2), { mode: 0o600 }); } catch {}
   }
 
   const prevToShutdown = (existingInfo && existingInfo.pid && existingInfo.pid !== newInfo.pid)
@@ -436,7 +447,7 @@ async function rollbackPreparedLiveBridge(bridgePrep) {
   try {
     if (bridgePrep.previousLiveInfo) {
       const tmpRestore = `${statePath}.rollback-${process.pid}`;
-      fs.writeFileSync(tmpRestore, JSON.stringify(bridgePrep.previousLiveInfo, null, 2));
+      fs.writeFileSync(tmpRestore, JSON.stringify(bridgePrep.previousLiveInfo, null, 2), { mode: 0o600 });
       fs.renameSync(tmpRestore, statePath);
     } else if (fs.existsSync(statePath)) {
       const cur = JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -476,11 +487,16 @@ async function cmdStatus(customPath) {
     }
   } catch {}
 
-  let macosGuardEnabled = false;
+  let updateGuardEnabled = false;
   if (process.platform === 'darwin') {
     const gp = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.antigravity.pulse.guard.plist');
     const dp = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.antigravity.pulse.daemon.plist');
-    macosGuardEnabled = fs.existsSync(gp) || fs.existsSync(dp);
+    updateGuardEnabled = fs.existsSync(gp) || fs.existsSync(dp);
+  } else if (process.platform === 'win32') {
+    try {
+      const { isWindowsGuardInstalled } = require('./scripts/macos-setup');
+      updateGuardEnabled = isWindowsGuardInstalled();
+    } catch {}
   }
 
   const live = await queryLiveWindow();
@@ -499,7 +515,7 @@ async function cmdStatus(customPath) {
     asarPath,
     antigravityVersion: version,
     asarPatched,
-    updateGuardEnabled: macosGuardEnabled,
+    updateGuardEnabled,
     versions: {
       diskVersion: diskVersion || null,
       rendererVersion: live.version || null,
@@ -540,6 +556,13 @@ async function cmdCheck(customPath) {
     const gp = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.antigravity.pulse.guard.plist');
     const dp = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.antigravity.pulse.daemon.plist');
     console.log(`  - 官方更新自动守护: ${fs.existsSync(gp) ? '✅ 已开启 (WatchPaths 零内存守护)' : (fs.existsSync(dp) ? '✅ 已开启 (零改包守护模式)' : '⚪ 未开启（运行 ./install.sh 可一键开启）')}`);
+  } else if (process.platform === 'win32') {
+    let winGuardOn = false;
+    try {
+      const { isWindowsGuardInstalled } = require('./scripts/macos-setup');
+      winGuardOn = isWindowsGuardInstalled();
+    } catch {}
+    console.log(`  - 官方更新自动守护: ${winGuardOn ? '✅ 已开启 (Windows 计划任务静默自愈)' : '⚪ 未开启（双击 install.bat 可一键开启）'}`);
   }
   const py = resolvePython();
   console.log(`  - Python 附件深度解析器: ${py || '未检测到（基础上下文统计不受影响）'}`);
@@ -557,7 +580,19 @@ async function cmdCheck(customPath) {
 async function main() {
   const args = process.argv.slice(2);
   const isHelpFlag = args.includes('--help') || args.includes('-h');
-  const cmd = isHelpFlag ? 'help' : (args.find(a => !a.startsWith('-')) || 'install').toLowerCase();
+  const VALUE_FLAGS = new Set(['--path', '--backup', '--port', '--mode', '--limit', '--tier', '--title', '--context', '--brand', '--lang', '--proxy-url']);
+  const positionals = [];
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (VALUE_FLAGS.has(token)) {
+      i++;
+      continue;
+    }
+    if (!token.startsWith('-')) {
+      positionals.push(token);
+    }
+  }
+  const cmd = isHelpFlag ? 'help' : (positionals[0] || 'install').toLowerCase();
   const pathIdx = args.indexOf('--path');
   const customPath = pathIdx >= 0 ? args[pathIdx + 1] : null;
   const backupIdx = args.indexOf('--backup');
@@ -838,7 +873,7 @@ async function main() {
 
     console.log('3. 免 TUN 网络直连 (ProxyNoTun):');
     console.log(`   - 配置状态: ${cfg.modules.proxy.enabled ? '🟢 已启用' : '⚪ 已禁用'}`);
-    console.log(`   - 代理地址: ${cfg.modules.proxy.proxyUrl || '未配置'}`);
+    console.log(`   - 代理地址: ${redactProxyUrl(cfg.modules.proxy.proxyUrl) || '未配置'}`);
     console.log(`   - 绕过列表: ${cfg.modules.proxy.bypassList || '默认'}`);
     console.log(`   - 磁盘注入: ${asarUtils.includes('Antigravity Proxy NoTun') ? '✅ 已注入' : '⚪ 未注入'}`);
     if (cfg.modules.proxy.migratedFrom) {
@@ -864,7 +899,7 @@ async function main() {
     await install({ path: customPath, modules: { proxy: { enabled: enable } } });
     console.log(`✅ 免 TUN 网络直连模块已${enable ? '开启' : '关闭'}并完成 ASAR 注入同步！`);
   } else if (cmd === 'proxy:set') {
-    const rawUrl = args[1] && !args[1].startsWith('-') ? args[1] : args[2];
+    const rawUrl = positionals[1];
     if (!rawUrl) throw new Error(`请提供有效的代理地址，例如: node cli.js proxy:set http://${LOOPBACK_IPV4}:7890`);
     const { parseAndValidateProxyUrl } = require('./meter-proxy');
     const check = parseAndValidateProxyUrl(rawUrl);
@@ -880,12 +915,12 @@ async function main() {
     if (cfg.modules.proxy.enabled) {
       await install({ path: customPath, modules: { proxy: { proxyUrl: newUrl } } });
     }
-    console.log(`✅ 代理地址已更新为: ${newUrl}`);
+    console.log(`✅ 代理地址已更新为: ${redactProxyUrl(newUrl)}`);
   } else if (cmd === 'proxy:test') {
     const { loadModulesConfig, testProxyHealth } = require('./modules-config');
     const cfg = loadModulesConfig();
-    const urlToTest = args[1] && !args[1].startsWith('-') ? args[1] : cfg.modules.proxy.proxyUrl;
-    console.log(`🔍 正在分层检测代理地址连通性: ${urlToTest}...`);
+    const urlToTest = positionals[1] || cfg.modules.proxy.proxyUrl;
+    console.log(`🔍 正在分层检测代理地址连通性: ${redactProxyUrl(urlToTest)}...`);
     const r = await testProxyHealth(urlToTest);
     console.log(`  - 1. 配置格式验证: ${r.configValid ? '✅ 合法' : '❌ 错误'}`);
     console.log(`  - 2. 本地代理端口: ${r.proxyReachable ? '✅ 可连接' : '❌ 无法连接'}`);

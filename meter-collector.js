@@ -3,7 +3,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const http = require('http');
 const https = require('https');
+const { normalizeLoopbackOrigin } = require('./local-api');
 const { fileURLToPath } = require('url');
 const { spawn, spawnSync } = require('child_process');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
@@ -341,7 +343,30 @@ const CONVERSATIONS_CACHE_MAX_ENTRIES = 32;
 const filesCache = new Map();
 const conversations = new Map();
 const csrfTokenByOrigin = new Map();
+const cookiesByOrigin = new Map();
 let pythonQueue = Promise.resolve();
+
+function mergeOriginSetCookies(origin, setCookieHeaders) {
+  if (!origin || !setCookieHeaders) return;
+  const list = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
+  let jar = cookiesByOrigin.get(origin);
+  if (!jar) { jar = new Map(); cookiesByOrigin.set(origin, jar); }
+  for (const raw of list) {
+    const first = String(raw || '').split(';')[0].trim();
+    const eqIdx = first.indexOf('=');
+    if (eqIdx > 0) {
+      const k = first.slice(0, eqIdx).trim();
+      const v = first.slice(eqIdx + 1).trim();
+      if (k) jar.set(k, v);
+    }
+  }
+}
+
+function getOriginCookieHeader(origin) {
+  const jar = cookiesByOrigin.get(origin);
+  if (!jar || jar.size === 0) return '';
+  return Array.from(jar.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
+}
 
 function setBoundedMap(map, key, val, maxEntries) {
   if (map.has(key)) map.delete(key);
@@ -354,6 +379,7 @@ function setBoundedMap(map, key, val, maxEntries) {
 
 function request(origin, method, body, token, signal = null) {
   const url = method ? `${origin}/exa.language_server_pb.LanguageServerService/${method}` : origin + '/';
+  const client = String(origin || '').startsWith('http:') ? http : https;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       const err = new Error('请求已取消');
@@ -361,12 +387,19 @@ function request(origin, method, body, token, signal = null) {
       reject(err);
       return;
     }
-    const req = https.request(url, {
+    const headers = method
+      ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token }
+      : {};
+    const cookieStr = getOriginCookieHeader(origin);
+    if (cookieStr) headers.Cookie = cookieStr;
+    const req = client.request(url, {
+      agent: false,
       rejectUnauthorized: false,
       method: method ? 'POST' : 'GET',
-      headers: method ? { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': token } : {},
+      headers,
       ...(signal ? { signal } : {})
     }, response => {
+      mergeOriginSetCookies(origin, response.headers?.['set-cookie']);
       const chunks = [];
       let size = 0;
       response.on('data', chunk => {
@@ -553,8 +586,18 @@ async function scanFiles(media, scanOptions = {}) {
 let collectSeqCounter = 0;
 const latestCollectSeqByOrigin = new Map();
 
+function extractCsrfTokenFromHtml(html) {
+  const { extractAppConfigFromHtml } = require('./local-api');
+  const parsed = typeof extractAppConfigFromHtml === 'function' ? extractAppConfigFromHtml(html) : null;
+  if (!parsed) throw new Error('未能从宿主页面提取 CSRF 令牌');
+  if (!parsed.csrfToken) throw new Error('宿主配置中缺少 CSRF 令牌');
+  return String(parsed.csrfToken);
+}
+
 async function collect(origin, id, options = {}) {
-  if (!/^https:\/\/127\.0\.0\.1:\d+$/.test(origin) || !/^[a-f\d-]{36}$/i.test(id)) throw new Error('无效本机会话');
+  const normalizedOrigin = normalizeLoopbackOrigin(origin);
+  if (!normalizedOrigin || !/^[a-f\d-]{36}$/i.test(id)) throw new Error('无效本机会话');
+  origin = normalizedOrigin;
   const key = `${origin}/${id}`;
   const supersede = options.supersedePrevious === true;
   const mySeq = supersede ? (++collectSeqCounter) : 0;
@@ -572,9 +615,13 @@ async function collect(origin, id, options = {}) {
     return Boolean((latest && latest.seq > mySeq && latest.id !== id) || abortController?.signal?.aborted);
   };
   const previous = conversations.get(key);
-  if (previous?.pending) return previous.pending;
+  // 若既有 pending 任务已被取消（aborted），禁止继续复用该僵尸 Promise，避免后续扫描永久返回 abortedStale
+  if (previous?.pending && !previous.abortController?.signal?.aborted && !options.force) {
+    return previous.pending;
+  }
   if (options.force) filesCache.clear();
   if (!options.force && previous?.result && Date.now() - previous.at < 12000) return previous.result;
+  const priorCached = previous?.result ? { result: previous.result, at: previous.at } : null;
   const task = (async () => {
     const signal = abortController?.signal || null;
     try {
@@ -582,7 +629,7 @@ async function collect(origin, id, options = {}) {
       if (!token) {
         const html = await request(origin, null, null, null, signal);
         if (isSuperseded()) return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
-        token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
+        token = extractCsrfTokenFromHtml(html);
         csrfTokenByOrigin.set(origin, token);
       }
       const call = async (method, body) => {
@@ -591,8 +638,9 @@ async function collect(origin, id, options = {}) {
         } catch (err) {
           if (err && /HTTP 40[13]/.test(String(err.message || '')) && !signal?.aborted) {
             csrfTokenByOrigin.delete(origin);
+            cookiesByOrigin.delete(origin);
             const html = await request(origin, null, null, null, signal);
-            token = JSON.parse(html.match(/window.__APP_CONFIG__ = (.*?);/)[1]).csrfToken;
+            token = extractCsrfTokenFromHtml(html);
             csrfTokenByOrigin.set(origin, token);
             return await request(origin, method, body, token, signal);
           }
@@ -688,10 +736,8 @@ async function collect(origin, id, options = {}) {
     };
     const result = { version: PROJECT_VERSION, conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
     if (isSuperseded()) {
-      conversations.delete(key);
       return { version: PROJECT_VERSION, conversation: id, abortedStale: true, scannedAt: Date.now(), errors: [] };
     }
-    setBoundedMap(conversations, key, { result, at: Date.now() }, CONVERSATIONS_CACHE_MAX_ENTRIES);
     return result;
     } catch (err) {
       if (isSuperseded() || (err && err.name === 'AbortError' && signal?.aborted)) {
@@ -700,8 +746,27 @@ async function collect(origin, id, options = {}) {
       throw err;
     }
   })();
-  setBoundedMap(conversations, key, { ...previous, pending: task }, CONVERSATIONS_CACHE_MAX_ENTRIES);
-  try { return await task; } catch (e) { conversations.delete(key); throw e; }
+  const activeEntry = { ...(priorCached || {}), pending: task, abortController };
+  setBoundedMap(conversations, key, activeEntry, CONVERSATIONS_CACHE_MAX_ENTRIES);
+  try {
+    const res = await task;
+    // 仅在仍为当前活跃槽位时回写或清理，避免已取消的旧任务误覆盖后续新发起的扫描任务
+    if (conversations.get(key) === activeEntry) {
+      if (res && res.abortedStale) {
+        if (priorCached) setBoundedMap(conversations, key, priorCached, CONVERSATIONS_CACHE_MAX_ENTRIES);
+        else conversations.delete(key);
+      } else {
+        setBoundedMap(conversations, key, { result: res, at: Date.now() }, CONVERSATIONS_CACHE_MAX_ENTRIES);
+      }
+    }
+    return res;
+  } catch (e) {
+    if (conversations.get(key) === activeEntry) {
+      if (priorCached) setBoundedMap(conversations, key, priorCached, CONVERSATIONS_CACHE_MAX_ENTRIES);
+      else conversations.delete(key);
+    }
+    throw e;
+  }
 }
 
 let cachedTokenHistory = null;
@@ -2300,14 +2365,36 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
     ? options.backendSource.trim()
     : 'host';
 
-  // 短缓存防刷（仅在非强制刷新且无静态测试桩时生效，15s 内复用同 origin 结果）
+  // 短缓存防刷（仅在非强制刷新、无静态测试桩且上次成功时生效，15s 内复用同 origin 原始数据并按最新焦点模型重建视图）
   const prevCachedQuota = cachedQuotaStateByOrigin.get(originScope) || null;
-  if (!force && !hasStaticFixture && !options.agDir && prevCachedQuota && (nowMs - prevCachedQuota.fetchedAtMs < 15000)) {
-    if (prevCachedQuota.backendSource === backendSource && prevCachedQuota.collectorVersion === PROJECT_VERSION) {
+  if (!force && !hasStaticFixture && !options.agDir && prevCachedQuota && prevCachedQuota.ok !== false && (nowMs - prevCachedQuota.fetchedAtMs < 15000)) {
+    const reqModel = options.currentModel || null;
+    const reqPool = options.browsePoolKey || null;
+    const needsViewRebuild = Boolean(
+      prevCachedQuota._raw &&
+      (reqModel !== (prevCachedQuota._viewCurrentModel || null) || reqPool !== (prevCachedQuota._viewBrowsePoolKey || null))
+    );
+    if (!needsViewRebuild && prevCachedQuota.backendSource === backendSource && prevCachedQuota.collectorVersion === PROJECT_VERSION) {
       return prevCachedQuota;
     }
+    const rebuiltSnapshot = needsViewRebuild
+      ? buildModelQuotaSnapshot({
+          cascadeModelConfigs: prevCachedQuota._raw.cascadeModelConfigs || [],
+          quotaSummaryRes: prevCachedQuota._raw.quotaSummaryRes || null,
+          planStatus: prevCachedQuota._raw.planStatus || null,
+          currentModel: reqModel,
+          browsePoolKey: reqPool,
+          fetchMeta: {
+            fetchedAtMs: prevCachedQuota._raw.fetchedAtMs || prevCachedQuota.fetchedAtMs,
+            error: null,
+            errorKind: null
+          },
+          nowMs
+        })
+      : prevCachedQuota.snapshot;
     return {
       ...prevCachedQuota,
+      snapshot: rebuiltSnapshot,
       collectorVersion: PROJECT_VERSION,
       backendVersion: PROJECT_VERSION,
       backendSource
@@ -2434,7 +2521,7 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
         _raw: prevRaw
       };
       if (!hasStaticFixture && !options.agDir && curScoped) {
-        cachedQuotaStateByOrigin.set(originScope, { ...curScoped, error: fetchError, errorKind, snapshot });
+        cachedQuotaStateByOrigin.set(originScope, { ...curScoped, ok: false, error: fetchError, errorKind, snapshot });
       }
       return out;
     }
@@ -2463,6 +2550,8 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
 
     const out = {
       ok: true,
+      _viewCurrentModel: options.currentModel || null,
+      _viewBrowsePoolKey: options.browsePoolKey || null,
       collectorVersion: PROJECT_VERSION,
       backendVersion: PROJECT_VERSION,
       backendSource,
@@ -3861,7 +3950,8 @@ async function collectTokenHistoryAsync(options = {}) {
         options: cloneCollectorOptionsForWorker(options),
         livePlanStatus,
         prevAccountEmail,
-        prevArchiveSig
+        prevArchiveSig,
+        scanSeq: thisScanSeq
       }, 'collectTokenHistory', options);
       if (workerResp && workerResp._workerHandled && workerResp.result && workerResp.result.out) {
         result = workerResp.result;
@@ -3907,48 +3997,59 @@ async function collectTokenHistoryAsync(options = {}) {
 }
 
 if (!isMainThread && workerData && workerData.agCollectorHistoryWorker && parentPort) {
-  parentPort.on('message', async (msg) => {
-    const { id, cmd, payload, env } = msg || {};
-    const prevEnv = {};
-    if (env && typeof env === 'object') {
-      for (const [k, v] of Object.entries(env)) {
-        prevEnv[k] = process.env[k];
-        if (v === undefined) delete process.env[k];
-        else process.env[k] = v;
-      }
+  // 严格串行化 Worker 消息队列，避免并发任务互相污染 process.env 或以旧扫描结果覆盖归档
+  let workerMsgQueue = Promise.resolve();
+  let latestReceivedScanSeq = 0;
+  parentPort.on('message', (msg) => {
+    const incomingSeq = Number(msg?.payload?.scanSeq || 0);
+    if (msg?.cmd === 'collectTokenHistory' && !msg?.payload?.options?.agDir && incomingSeq > latestReceivedScanSeq) {
+      latestReceivedScanSeq = incomingSeq;
     }
-    try {
-      if (cmd === 'collectTokenHistory') {
-        const opts = { ...(payload?.options || {}), _inWorker: true };
-        const result = await collectTokenHistoryCoreAsync(opts, {
-          livePlanStatus: payload?.livePlanStatus ?? null,
-          prevAccountEmail: payload?.prevAccountEmail ?? null,
-          prevArchiveSig: payload?.prevArchiveSig ?? null
-        });
-        parentPort.postMessage({ id, ok: true, result });
-      } else if (cmd === 'recordModelCalls') {
-        const opts = { ...(payload?.options || {}), _inWorker: true };
-        const result = recordModelCalls(payload?.newCalls || [], opts);
-        // createRecordResult 附带 valueOf 函数，跨 Worker 边界时须剥离函数属性避免 StructuredClone 抛 DataCloneError
-        const plainResult = {
-          ok: result ? result.ok !== false : false,
-          changed: Boolean(result && result.changed),
-          ...(result?.error ? { error: result.error } : {}),
-          ...(result?.phase ? { phase: result.phase } : {}),
-          ...(result?.code ? { code: result.code } : {})
-        };
-        parentPort.postMessage({ id, ok: true, result: plainResult });
-      } else {
-        throw new Error(`Unknown collector worker command: ${cmd}`);
+    workerMsgQueue = workerMsgQueue.then(async () => {
+      const { id, cmd, payload, env } = msg || {};
+      const prevEnv = {};
+      if (env && typeof env === 'object') {
+        for (const [k, v] of Object.entries(env)) {
+          prevEnv[k] = process.env[k];
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
       }
-    } catch (err) {
-      parentPort.postMessage({ id, ok: false, error: err?.message || String(err) });
-    } finally {
-      for (const [k, oldV] of Object.entries(prevEnv)) {
-        if (oldV === undefined) delete process.env[k];
-        else process.env[k] = oldV;
+      try {
+        if (cmd === 'collectTokenHistory') {
+          const opts = { ...(payload?.options || {}), _inWorker: true };
+          const taskSeq = Number(payload?.scanSeq || 0);
+          const result = await collectTokenHistoryCoreAsync(opts, {
+            livePlanStatus: payload?.livePlanStatus ?? null,
+            prevAccountEmail: payload?.prevAccountEmail ?? null,
+            prevArchiveSig: payload?.prevArchiveSig ?? null,
+            isStale: () => !opts.agDir && taskSeq > 0 && taskSeq < latestReceivedScanSeq
+          });
+          parentPort.postMessage({ id, ok: true, result });
+        } else if (cmd === 'recordModelCalls') {
+          const opts = { ...(payload?.options || {}), _inWorker: true };
+          const result = recordModelCalls(payload?.newCalls || [], opts);
+          // createRecordResult 附带 valueOf 函数，跨 Worker 边界时须剥离函数属性避免 StructuredClone 抛 DataCloneError
+          const plainResult = {
+            ok: result ? result.ok !== false : false,
+            changed: Boolean(result && result.changed),
+            ...(result?.error ? { error: result.error } : {}),
+            ...(result?.phase ? { phase: result.phase } : {}),
+            ...(result?.code ? { code: result.code } : {})
+          };
+          parentPort.postMessage({ id, ok: true, result: plainResult });
+        } else {
+          throw new Error(`Unknown collector worker command: ${cmd}`);
+        }
+      } catch (err) {
+        parentPort.postMessage({ id, ok: false, error: err?.message || String(err) });
+      } finally {
+        for (const [k, oldV] of Object.entries(prevEnv)) {
+          if (oldV === undefined) delete process.env[k];
+          else process.env[k] = oldV;
+        }
       }
-    }
+    }).catch(() => {});
   });
 }
 
@@ -4007,9 +4108,10 @@ function isAllowedDownloadRedirectUrl(targetUrlStr, baseUrlStr = null) {
     if (u.protocol !== 'https:') return false;
     if (u.username || u.password) return false;
     const host = u.hostname.toLowerCase();
-    if (host === 'github.com' || host.endsWith('.github.com')) return true;
-    if (host === 'objects.githubusercontent.com' || host.endsWith('.githubusercontent.com')) return true;
-    if (host.endsWith('.amazonaws.com') && host.includes('github-production-release-asset')) return true;
+    // 严格收紧到 GitHub Release 实际使用的官方资产下载域名，拒绝宽泛通配子域或任意 AWS S3 桶名
+    if (host === 'github.com' || host === 'api.github.com') return true;
+    if (host === 'objects.githubusercontent.com' || host === 'release-assets.githubusercontent.com') return true;
+    if (/^github-production-release-asset-[a-z0-9-]+\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/.test(host)) return true;
     return false;
   } catch {
     return false;
@@ -4471,6 +4573,7 @@ function requestGithubUrl(rawUrl, options = {}) {
           };
         }
 
+        let handedOffToRedirect = false;
         const req = https.request(reqOpts, res => {
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             const rawLocation = String(res.headers.location);
@@ -4506,6 +4609,8 @@ function requestGithubUrl(rawUrl, options = {}) {
               phase,
               _hopTrace: hopTrace
             });
+            // 标记已移交 streamTo 所有权给下一跳，防止 Hop-1 的延迟 timeout/error 误销毁正在写入的下载流
+            handedOffToRedirect = true;
             releaseUnusedTunnel();
             return requestGithubUrl(nextUrlStr, nextOptions).then(finishResolve, finishReject);
           }
@@ -4645,10 +4750,12 @@ function requestGithubUrl(rawUrl, options = {}) {
         });
 
         req.setTimeout(timeoutMs, () => {
+          if (handedOffToRedirect) { try { req.destroy(); } catch { } return; }
           if (options.streamTo) { try { options.streamTo.destroy(); } catch { } }
           req.destroy(new Error(`请求超时 (${timeoutMs}ms)`));
         });
         req.on('error', err => {
+          if (handedOffToRedirect) return;
           if (options.streamTo) { try { options.streamTo.destroy(); } catch { } }
           settleReject(err);
         });
@@ -5427,29 +5534,56 @@ async function applyUpdateAsync(options = {}) {
       return { ok: false, error: `SHA-256 校验失败 (期望: ${expectedSha}, 实际: ${actualSha})，拒绝安装`, htmlUrl: targetRelease.htmlUrl };
     }
 
-    // 解压前解析 ZIP 中央目录头，阻断路径穿越 (Zip-Slip) 与符号链接逃逸，并提供无外部命令依赖的原生解压能力
+    // 解压前解析 ZIP 中央目录头，阻断路径穿越 (Zip-Slip)、符号链接、LFH/CD 伪造与解压炸弹，严格走纯 Node 原生解压
+    const computeCrc32 = (() => {
+      const table = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        table[i] = c >>> 0;
+      }
+      return (buffer) => {
+        let crc = 0xffffffff;
+        for (let i = 0; i < buffer.length; i++) {
+          crc = table[(crc ^ buffer[i]) & 0xff] ^ (crc >>> 8);
+        }
+        return (crc ^ 0xffffffff) >>> 0;
+      };
+    })();
+
+    const MAX_ZIP_ENTRIES = 4096;
+    const MAX_ZIP_ENTRY_BYTES = 64 * 1024 * 1024;
+    const MAX_ZIP_TOTAL_BYTES = 128 * 1024 * 1024;
+
     const parseAndVerifyZipCentralDir = (buf) => {
       if (buf.length < 22) throw new Error('ZIP 归档体积异常过小');
       let eocdOffset = -1;
       const minSearch = Math.max(0, buf.length - 65558);
       for (let i = buf.length - 22; i >= minSearch; i--) {
         if (buf.readUInt32LE(i) === 0x06054b50) {
-          eocdOffset = i;
-          break;
+          const eocdCommentLen = buf.readUInt16LE(i + 20);
+          // 要求 EOCD 注释长度恰好覆盖至归档末尾，杜绝正文内伪造魔数截断
+          if (i + 22 + eocdCommentLen === buf.length) {
+            eocdOffset = i;
+            break;
+          }
         }
       }
-      if (eocdOffset < 0) throw new Error('无效的 ZIP 归档结构（缺失 EOCD）');
+      if (eocdOffset < 0) throw new Error('无效的 ZIP 归档结构（缺失有效 EOCD）');
       const totalEntries = buf.readUInt16LE(eocdOffset + 10);
       const cdSize = buf.readUInt32LE(eocdOffset + 12);
       const cdOffset = buf.readUInt32LE(eocdOffset + 16);
+      if (totalEntries > MAX_ZIP_ENTRIES) throw new Error(`ZIP 条目数超过安全上限 (${totalEntries})`);
       if (cdOffset + cdSize > eocdOffset) throw new Error('ZIP 中央目录边界越界');
       const parsedEntries = [];
+      let totalDeclaredUncomp = 0;
       let ptr = cdOffset;
       for (let idx = 0; idx < totalEntries; idx++) {
         if (ptr + 46 > eocdOffset || buf.readUInt32LE(ptr) !== 0x02014b50) {
           throw new Error('ZIP 中央目录条目头损坏');
         }
         const compMethod = buf.readUInt16LE(ptr + 10);
+        const crc32 = buf.readUInt32LE(ptr + 16);
         const compSize = buf.readUInt32LE(ptr + 20);
         const uncompSize = buf.readUInt32LE(ptr + 24);
         const nameLen = buf.readUInt16LE(ptr + 28);
@@ -5457,25 +5591,36 @@ async function applyUpdateAsync(options = {}) {
         const commentLen = buf.readUInt16LE(ptr + 32);
         const extAttr = buf.readUInt32LE(ptr + 38);
         const localHeaderOff = buf.readUInt32LE(ptr + 42);
+        const nextPtr = ptr + 46 + nameLen + extraLen + commentLen;
+        if (nextPtr > eocdOffset) throw new Error('ZIP 中央目录条目长度越界');
         const entryName = buf.subarray(ptr + 46, ptr + 46 + nameLen).toString('utf8');
-        ptr += 46 + nameLen + extraLen + commentLen;
+        ptr = nextPtr;
 
         if (!entryName || entryName.includes('\0') || entryName.includes('\\')) {
           throw new Error(`拒绝不安全的压缩包条目名: ${entryName}`);
         }
         const posixNorm = path.posix.normalize(entryName);
-        if (posixNorm.startsWith('/') || posixNorm === '..' || posixNorm.startsWith('../') || /^[a-zA-Z]:/.test(posixNorm)) {
+        if (!posixNorm || posixNorm === '.' || posixNorm.startsWith('/') || posixNorm === '..' || posixNorm.startsWith('../') || /^[a-zA-Z]:/.test(posixNorm)) {
           throw new Error(`检测到 ZIP 路径穿越风险条目: ${entryName}`);
         }
         const unixFileType = ((extAttr >>> 16) & 0o170000);
         if (unixFileType === 0o120000) {
           throw new Error(`拒绝包含符号链接的更新包条目: ${entryName}`);
         }
+        if (uncompSize > MAX_ZIP_ENTRY_BYTES) {
+          throw new Error(`压缩包单文件体积超出安全上限: ${entryName}`);
+        }
+        totalDeclaredUncomp += uncompSize;
+        if (totalDeclaredUncomp > MAX_ZIP_TOTAL_BYTES) {
+          throw new Error('压缩包总解压体积超出安全上限');
+        }
         parsedEntries.push({
+          rawName: entryName,
           name: posixNorm,
           isDir: entryName.endsWith('/') || unixFileType === 0o040000,
           unixMode: (extAttr >>> 16) & 0o777,
           compMethod,
+          crc32,
           compSize,
           uncompSize,
           localHeaderOff
@@ -5486,6 +5631,7 @@ async function applyUpdateAsync(options = {}) {
 
     const extractVerifiedZipPureNode = (buf, entries, destRoot) => {
       const resolvedRoot = path.resolve(destRoot);
+      let totalExtractedBytes = 0;
       for (const ent of entries) {
         const outPath = path.resolve(resolvedRoot, ent.name);
         if (outPath !== resolvedRoot && !outPath.startsWith(resolvedRoot + path.sep)) {
@@ -5502,14 +5648,32 @@ async function applyUpdateAsync(options = {}) {
         const lNameLen = buf.readUInt16LE(lh + 26);
         const lExtraLen = buf.readUInt16LE(lh + 28);
         const dataStart = lh + 30 + lNameLen + lExtraLen;
+        if (dataStart > buf.length || dataStart + ent.compSize > buf.length) {
+          throw new Error(`ZIP 条目数据边界越界: ${ent.name}`);
+        }
+        // 核验本地头文件名与中央目录文件名一致，防御 LFH/CD 名称错位攻击
+        const localName = buf.subarray(lh + 30, lh + 30 + lNameLen).toString('utf8');
+        if (localName !== ent.rawName) {
+          throw new Error(`ZIP 本地头与中央目录文件名不一致: ${ent.name}`);
+        }
         const compSlice = buf.subarray(dataStart, dataStart + ent.compSize);
         let rawOut;
         if (ent.compMethod === 0) {
           rawOut = compSlice;
         } else if (ent.compMethod === 8) {
-          rawOut = zlib.inflateRawSync(compSlice, { maxOutputLength: 64 * 1024 * 1024 });
+          rawOut = zlib.inflateRawSync(compSlice, { maxOutputLength: MAX_ZIP_ENTRY_BYTES });
         } else {
           throw new Error(`不支持的 ZIP 压缩算法 (${ent.compMethod}): ${ent.name}`);
+        }
+        if (rawOut.length !== ent.uncompSize) {
+          throw new Error(`ZIP 解压长度校验失败: ${ent.name}`);
+        }
+        totalExtractedBytes += rawOut.length;
+        if (totalExtractedBytes > MAX_ZIP_TOTAL_BYTES) {
+          throw new Error('ZIP 解压总大小超出安全上限');
+        }
+        if (computeCrc32(rawOut) !== ent.crc32) {
+          throw new Error(`ZIP 条目 CRC32 校验失败: ${ent.name}`);
         }
         fs.mkdirSync(path.dirname(outPath), { recursive: true });
         fs.writeFileSync(outPath, rawOut);
@@ -5538,13 +5702,12 @@ async function applyUpdateAsync(options = {}) {
         extractRes = { status: 1, error: err };
       }
     } else if (verifiedZipEntries) {
+      // 严禁在纯 Node 校验失败后回退到外部 tar/unzip，避免绕过路径穿越与解压炸弹防护
       try {
         extractVerifiedZipPureNode(fileBuf, verifiedZipEntries, extractDir);
         extractRes = { status: 0 };
-      } catch {
-        extractRes = process.platform === 'win32'
-          ? spawnSync('tar', ['-xf', zipPath, '-C', extractDir], { stdio: 'ignore', windowsHide: true })
-          : spawnSync('unzip', ['-q', zipPath, '-d', extractDir], { stdio: 'ignore' });
+      } catch (extractErr) {
+        return { ok: false, error: `解压更新安装包失败: ${extractErr.message}`, htmlUrl: targetRelease.htmlUrl };
       }
     }
     if (extractRes && extractRes.status !== 0) {
@@ -5603,7 +5766,10 @@ async function applyUpdateAsync(options = {}) {
             recordedInstalledPath = manifestData.installed;
           }
           if (!preservedInstallerDir && manifestData?.installerDir && typeof manifestData.installerDir === 'string') {
-            if (!path.resolve(manifestData.installerDir).startsWith(path.resolve(os.tmpdir()))) {
+            const safeReal = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+            const realInst = safeReal(manifestData.installerDir);
+            const realTmp = safeReal(os.tmpdir());
+            if (realInst !== realTmp && !realInst.startsWith(realTmp + path.sep)) {
               preservedInstallerDir = manifestData.installerDir;
             }
           }
@@ -5675,13 +5841,15 @@ async function applyUpdateAsync(options = {}) {
       if (!isAsarLockedByRunningHost) {
         return { ok: false, error: `热安装执行失败: ${detail}` };
       }
-      // Windows 宿主运行期锁定 app.asar 时，保留已就绪的 live-runtime 供主进程立即拉起新版 live-host 免重启生效
+      // Windows 宿主运行期锁定 app.asar 时，如实标记 diskInstalled:false，同时交付 liveRuntimeUpdated 供主进程立即热切 live-host
       cachedUpdateCheck = null;
       cachedUpdateCheckAt = 0;
       return {
         ok: true,
-        diskInstalled: true,
+        diskInstalled: false,
+        liveRuntimeUpdated: true,
         asarLockedPendingRestart: true,
+        restartRequired: true,
         liveInjected: false,
         backendHotReloaded: false,
         liveRuntimeDir,

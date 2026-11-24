@@ -129,18 +129,37 @@ function getProxyCandidatePaths(customPath = null, options = {}) {
       path.join(resolvedState, 'proxy.json')
     );
   }
-  const localBase = env.LOCALAPPDATA || (platform === 'win32'
-    ? path.join(home, 'AppData', 'Local')
-    : platform === 'darwin'
-      ? path.join(home, 'Library', 'Application Support')
-      : (env.XDG_CONFIG_HOME || path.join(home, '.config')));
-
-  // 统一配置中心 modules.json 优先级高于历史遗留的 proxy.json，避免关闭免 TUN 后被旧文件重新激活
-  candidates.push(
-    path.join(localBase, 'AntigravityContextMeter', 'modules.json'),
-    path.join(localBase, 'AntigravityContextMeter', 'proxy.json'),
-    path.join(localBase, 'AntigravityProxyNoTun', 'config.json')
-  );
+  if (platform === 'win32') {
+    const localBase = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    candidates.push(
+      path.join(localBase, 'AntigravityContextMeter', 'modules.json'),
+      path.join(localBase, 'AntigravityContextMeter', 'proxy.json'),
+      path.join(localBase, 'AntigravityProxyNoTun', 'config.json')
+    );
+  } else if (platform === 'darwin') {
+    const localBase = path.join(home, 'Library', 'Application Support');
+    candidates.push(
+      path.join(localBase, 'AntigravityContextMeter', 'modules.json'),
+      path.join(localBase, 'AntigravityContextMeter', 'proxy.json'),
+      path.join(localBase, 'AntigravityProxyNoTun', 'config.json')
+    );
+  } else {
+    // Linux 上 getStateDir() 写入 XDG_STATE_HOME (~/.local/state)，优先探测状态目录，保留 XDG_CONFIG_HOME (~/.config) 兼容兜底
+    const stateBase = env.XDG_STATE_HOME || path.join(home, '.local', 'state');
+    const cfgBase = env.XDG_CONFIG_HOME || path.join(home, '.config');
+    candidates.push(
+      path.join(stateBase, 'AntigravityContextMeter', 'modules.json'),
+      path.join(stateBase, 'AntigravityContextMeter', 'proxy.json'),
+      path.join(stateBase, 'AntigravityProxyNoTun', 'config.json')
+    );
+    if (path.resolve(cfgBase) !== path.resolve(stateBase)) {
+      candidates.push(
+        path.join(cfgBase, 'AntigravityContextMeter', 'modules.json'),
+        path.join(cfgBase, 'AntigravityContextMeter', 'proxy.json'),
+        path.join(cfgBase, 'AntigravityProxyNoTun', 'config.json')
+      );
+    }
+  }
 
   return candidates;
 }

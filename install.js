@@ -13,7 +13,8 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { loadAsarEngine, builtinAsar, collectUnpackedPaths, getStateDir, findAsarPath } = require('./asar-engine');
-const { loadModulesConfig, saveModulesConfig, acquireFileLock } = require('./modules-config');
+const { loadModulesConfig, saveModulesConfig, acquireFileLock, invalidateDiskModulesCache } = require('./modules-config');
+const { parseAndValidateProxyUrl } = require('./meter-proxy');
 const { LOOPBACK_IPV4, discoverCdpTargets, openCdpSession, extractTargetOrigin } = require('./local-api');
 const {
   TAGS,
@@ -37,19 +38,19 @@ function clearAsarCache(archivePath) {
   } catch { }
 }
 
-function extractAsarFile(archivePath, relPath) {
+function extractAsarFile(archivePath, relPath, extractOptions = {}) {
   clearAsarCache(archivePath);
   try {
-    return builtinAsar.extractFile(archivePath, relPath);
+    return builtinAsar.extractFile(archivePath, relPath, extractOptions);
   } catch {
     return asar.extractFile(archivePath, relPath);
   }
 }
 
-function extractAllAsar(archivePath, destDir) {
+function extractAllAsar(archivePath, destDir, extractOptions = {}) {
   clearAsarCache(archivePath);
   try {
-    builtinAsar.extractAll(archivePath, destDir);
+    builtinAsar.extractAll(archivePath, destDir, extractOptions);
   } catch {
     asar.extractAll(archivePath, destDir);
   }
@@ -75,9 +76,10 @@ function postLiveHttpJson(port, token, routePath, origin, body = {}, timeoutMs =
           'X-AG-Context-Token': String(token || '')
         }
       }, res => {
-        let raw = '';
-        res.on('data', c => raw += c);
+        const chunks = [];
+        res.on('data', c => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
         res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf8');
           try {
             const parsed = JSON.parse(raw || '{}');
             resolve({ statusCode: res.statusCode, ...parsed });
@@ -470,7 +472,11 @@ async function install(options = {}) {
     if (process.argv.includes('--disable-proxy')) modulesConfig.modules.proxy.enabled = false;
     const proxyUrlIdx = process.argv.indexOf('--proxy-url');
     if (proxyUrlIdx >= 0 && process.argv[proxyUrlIdx + 1]) {
-      modulesConfig.modules.proxy.proxyUrl = process.argv[proxyUrlIdx + 1];
+      const checkProxy = parseAndValidateProxyUrl(process.argv[proxyUrlIdx + 1]);
+      if (!checkProxy.ok) {
+        throw new Error(`--proxy-url 参数格式无效: ${checkProxy.error}`);
+      }
+      modulesConfig.modules.proxy.proxyUrl = checkProxy.value;
     }
     saveModulesConfig(modulesConfig);
 
@@ -515,7 +521,8 @@ async function install(options = {}) {
     try {
       fs.mkdirSync(staging, { recursive: true });
       clearAsarCache(sourceArchive);
-      extractAllAsar(sourceArchive, staging);
+      const fallbackUnpackedDir = installed + '.unpacked';
+      extractAllAsar(sourceArchive, staging, { fallbackUnpackedDir });
 
       let cleanUtils = cleanUtilsSource(inPlaceCleanedUtils || extractAsarFile(sourceArchive, 'dist/utils.js').toString('utf8'));
       let cleanPreload = cleanPreloadSource(inPlaceCleanedPreload || extractAsarFile(sourceArchive, 'dist/preload.js').toString('utf8'));
@@ -579,7 +586,7 @@ async function install(options = {}) {
           ? (process.env.LOCALAPPDATA || path.join(homeDir, 'AppData', 'Local'))
           : (process.platform === 'darwin'
             ? path.join(homeDir, 'Library', 'Application Support')
-            : path.join(homeDir, '.local', 'state'));
+            : (process.env.XDG_STATE_HOME || path.join(homeDir, '.local', 'state')));
         const dictCandidates = [
           path.join(__dirname, 'i18n', 'zh-CN.json'),
           path.join(__dirname, 'src', 'i18n', 'zh-CN.json'),
@@ -642,8 +649,8 @@ async function install(options = {}) {
           if (file === 'modules-config.js' && pkgVersion) {
             const rawModCfg = fs.readFileSync(srcP, 'utf8');
             const syncedModCfg = rawModCfg.replace(
-              /const FALLBACK_PROJECT_VERSION = '[^']*';/,
-              `const FALLBACK_PROJECT_VERSION = '${String(pkgVersion).replace(/'/g, '')}';`
+              /const FALLBACK_PROJECT_VERSION = ['"][^'"]*['"];/,
+              `const FALLBACK_PROJECT_VERSION = "${String(pkgVersion).replace(/["']/g, '')}";`
             );
             fs.writeFileSync(path.join(staging, 'dist', file), syncedModCfg, 'utf8');
           } else {
@@ -697,8 +704,12 @@ async function install(options = {}) {
         if (before.files || before.link) continue;
         if (!!before.unpacked !== !!after.unpacked) throw new Error(`Unpack flag changed: ${name}`);
         const isAllowed = allowedChanges.includes(name) || name.startsWith('dist' + path.sep + 'i18n' + path.sep);
-        if (!isAllowed && sha(asar.extractFile(sourceArchive, name)) !== sha(asar.extractFile(packed, name))) {
-          throw new Error(`Unexpected file change: ${name}`);
+        if (!isAllowed) {
+          const beforeBuf = extractAsarFile(sourceArchive, name, { fallbackUnpackedDir });
+          const afterBuf = extractAsarFile(packed, name, { fallbackUnpackedDir });
+          if (sha(beforeBuf) !== sha(afterBuf)) {
+            throw new Error(`Unexpected file change: ${name}`);
+          }
         }
         verified++;
       }
@@ -714,29 +725,35 @@ async function install(options = {}) {
       const previousInstalledSha256 = isReadableAsar(previousInstalledBackup) ? sha(fs.readFileSync(previousInstalledBackup)) : null;
       const origSha = isReadableAsar(backup) ? sha(fs.readFileSync(backup)) : (previousInstalledSha256 || previousManifest?.originalSha256);
 
+      const safeReal = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+      const realTmpRoot = safeReal(os.tmpdir());
+      const isInsideTmp = (p) => {
+        const rp = safeReal(p);
+        return rp === realTmpRoot || rp.startsWith(realTmpRoot + path.sep);
+      };
+      const resolvedInstallerDir = (() => {
+        const envDir = process.env.AG_PRESERVE_INSTALLER_DIR ? path.resolve(process.env.AG_PRESERVE_INSTALLER_DIR) : null;
+        if (envDir && fs.existsSync(envDir)) return envDir;
+        // 在线热更新在临时解压目录执行时，避免将即将删除的 tmp 目录写入持久化安装记录
+        if (isInsideTmp(__dirname)) {
+          if (previousManifest?.installerDir && !isInsideTmp(previousManifest.installerDir) && fs.existsSync(previousManifest.installerDir)) {
+            return previousManifest.installerDir;
+          }
+          return path.join(stateDir, 'live-runtime');
+        }
+        return __dirname;
+      })();
+
       const manifest = {
         meterVersion: pkgVersion,
         version,
         installed,
-        installerDir: (() => {
-          const envDir = process.env.AG_PRESERVE_INSTALLER_DIR ? path.resolve(process.env.AG_PRESERVE_INSTALLER_DIR) : null;
-          if (envDir && fs.existsSync(envDir)) return envDir;
-          const tmpRoot = path.resolve(os.tmpdir());
-          const curDir = path.resolve(__dirname);
-          // 在线热更新在临时解压目录执行时，避免将即将删除的 tmp 目录写入持久化安装记录
-          if (curDir.startsWith(tmpRoot)) {
-            if (previousManifest?.installerDir && !path.resolve(previousManifest.installerDir).startsWith(tmpRoot) && fs.existsSync(previousManifest.installerDir)) {
-              return previousManifest.installerDir;
-            }
-            return path.join(stateDir, 'live-runtime');
-          }
-          return __dirname;
-        })(),
+        installerDir: resolvedInstallerDir,
         cliPath: (() => {
-          const tmpRoot = path.resolve(os.tmpdir());
-          const curDir = path.resolve(__dirname);
-          if (curDir.startsWith(tmpRoot)) {
-            if (previousManifest?.cliPath && !path.resolve(previousManifest.cliPath).startsWith(tmpRoot) && fs.existsSync(previousManifest.cliPath)) {
+          const preservedCli = path.join(resolvedInstallerDir, 'cli.js');
+          if (process.env.AG_PRESERVE_INSTALLER_DIR && fs.existsSync(preservedCli)) return preservedCli;
+          if (isInsideTmp(__dirname)) {
+            if (previousManifest?.cliPath && !isInsideTmp(previousManifest.cliPath) && fs.existsSync(previousManifest.cliPath)) {
               return previousManifest.cliPath;
             }
             return path.join(stateDir, 'live-runtime', 'cli.js');
@@ -765,8 +782,22 @@ async function install(options = {}) {
         }
 
         try {
-          fs.copyFileSync(tempReplacement, installed);
+          if (process.platform !== 'win32') {
+            try {
+              // POSIX 同目录原子替换，避免复制中途崩溃留下截断的半成品 app.asar
+              fs.renameSync(tempReplacement, installed);
+            } catch (renErr) {
+              if (renErr && renErr.code === 'EXDEV') {
+                fs.copyFileSync(tempReplacement, installed);
+              } else {
+                throw renErr;
+              }
+            }
+          } else {
+            fs.copyFileSync(tempReplacement, installed);
+          }
           clearAsarCache(installed);
+          invalidateDiskModulesCache(installed);
         } catch (err) {
           if (err.code === 'EBUSY' || err.code === 'EPERM') {
             throw new Error(`无法写入目标文件 (${installed})：文件正被运行中的 Antigravity 锁定。请先完全退出 Antigravity 客户端后再运行！`);

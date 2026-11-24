@@ -16,4 +16,9 @@ echo "=========================================================="
 echo "  Antigravity Pulse · 一键彻底卸载与官方原版无损还原"
 echo "=========================================================="
 
+if ! command -v node >/dev/null 2>&1; then
+  echo "❌ 未检测到 Node.js (>=18)，请先通过 Homebrew (brew install node) 或官网安装 Node.js 后再执行卸载。"
+  exit 1
+fi
+
 node cli.js teardown "$@"

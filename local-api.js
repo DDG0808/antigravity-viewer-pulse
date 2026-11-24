@@ -56,7 +56,20 @@ function isAntigravityFallbackWorkbenchUrl(rawUrl) {
     return false;
   }
   if (/devtools/i.test(s)) return false;
-  return /^(?:vscode-file|app):\/\//i.test(s) || /workbench\.html/i.test(s);
+  try {
+    const parsed = new URL(s);
+    const proto = String(parsed.protocol || '').toLowerCase();
+    // 仅允许 Electron 本机协议或回环/file 协议下的 workbench.html，防止外域 URL 凭 query/path 绕过白名单
+    if (proto === 'vscode-file:' || proto === 'app:') return true;
+    const pathname = String(parsed.pathname || '');
+    if (proto === 'file:') return /\/workbench\.html$/i.test(pathname);
+    if (proto === 'http:' || proto === 'https:') {
+      return isLoopbackHost(parsed.hostname) && /\/workbench\.html$/i.test(pathname);
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function extractTargetOrigin(rawUrl) {
@@ -179,9 +192,10 @@ function fetchCdpJsonList(port, timeoutMs = 1800) {
       path: '/json/list',
       agent: false
     }, res => {
-      let body = '';
-      res.on('data', chunk => { body += chunk; });
+      const chunks = [];
+      res.on('data', chunk => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
       res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
         if (res.statusCode !== 200) {
           reject(new Error(`HTTP ${res.statusCode}`));
           return;
@@ -344,7 +358,9 @@ function openCdpSession(wsUrl, timeoutMs = 4500, wsOptions = {}) {
 
     const wsKey = crypto.randomBytes(16).toString('base64');
     const port = Number(parsed.port) || (parsed.protocol === 'wss:' ? 443 : 80);
-    const hostname = parsed.hostname === 'localhost' ? LOOPBACK_IPV4 : parsed.hostname;
+    const rawHost = parsed.hostname === 'localhost' ? LOOPBACK_IPV4 : parsed.hostname;
+    // net.connect 不接受带方括号的 IPv6 字面量，仅保留给 HTTP Host 头
+    const hostname = rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost;
     const reqPath = `${parsed.pathname || '/'}${parsed.search || ''}`;
 
     let settled = false;
@@ -580,28 +596,112 @@ function openCdpSession(wsUrl, timeoutMs = 4500, wsOptions = {}) {
   });
 }
 
-function request(url, body, token) {
+/**
+ * 从宿主 HTML 安全提取 window.__APP_CONFIG__ JSON（兼容多行、值内分号与无尾随分号写法）
+ */
+function extractAppConfigFromHtml(html) {
+  const src = String(html || '');
+  const anchor = src.match(/window\.__APP_CONFIG__\s*=\s*/);
+  if (anchor && typeof anchor.index === 'number') {
+    const startIdx = src.indexOf('{', anchor.index + anchor[0].length);
+    if (startIdx >= 0) {
+      let depth = 0;
+      let inStr = false;
+      let escaped = false;
+      for (let i = startIdx; i < src.length; i++) {
+        const ch = src[i];
+        if (inStr) {
+          if (escaped) escaped = false;
+          else if (ch === '\\') escaped = true;
+          else if (ch === '"') inStr = false;
+          continue;
+        }
+        if (ch === '"') { inStr = true; continue; }
+        if (ch === '{') depth += 1;
+        else if (ch === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            try {
+              const parsed = JSON.parse(src.slice(startIdx, i + 1));
+              if (parsed && typeof parsed === 'object') return parsed;
+            } catch {}
+            break;
+          }
+        }
+      }
+    }
+  }
+  const fallback = src.match(/window\.__APP_CONFIG__\s*=\s*(\{[\s\S]*?\})\s*;/);
+  if (fallback) {
+    try { return JSON.parse(fallback[1]); } catch {}
+  }
+  return null;
+}
+
+function mergeSetCookies(cookieMap, setCookieHeaders) {
+  if (!cookieMap || !setCookieHeaders) return;
+  const list = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
+  for (const raw of list) {
+    const firstPart = String(raw || '').split(';')[0].trim();
+    const eqIdx = firstPart.indexOf('=');
+    if (eqIdx > 0) {
+      const k = firstPart.slice(0, eqIdx).trim();
+      const v = firstPart.slice(eqIdx + 1).trim();
+      if (k) cookieMap.set(k, v);
+    }
+  }
+}
+
+function formatCookieHeader(cookieMap) {
+  if (!cookieMap || cookieMap.size === 0) return '';
+  return Array.from(cookieMap.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+function requestRaw(url, body, token, cookieMap = null, redirectLeft = 2) {
   return new Promise((resolve, reject) => {
+    const headers = body ? {
+      'Content-Type': 'application/json',
+      'Connect-Protocol-Version': '1',
+      'x-codeium-csrf-token': token
+    } : {};
+    const cookieStr = formatCookieHeader(cookieMap);
+    if (cookieStr) headers.Cookie = cookieStr;
+
     const req = (url.startsWith('https:') ? https : http).request(
       url,
       {
         agent: false,
         rejectUnauthorized: false,
         method: body ? 'POST' : 'GET',
-        headers: body ? {
-          'Content-Type': 'application/json',
-          'Connect-Protocol-Version': '1',
-          'x-codeium-csrf-token': token
-        } : {}
+        headers
       },
       response => {
-        let text = '';
-        response.on('data', chunk => { text += chunk; });
-        response.on('end', () => (
-          response.statusCode === 200
-            ? resolve(text)
-            : reject(new Error(`HTTP ${response.statusCode}: ${text.slice(0, 200)}`))
-        ));
+        mergeSetCookies(cookieMap, response.headers?.['set-cookie']);
+        const status = Number(response.statusCode || 0);
+        // 仅允许对同回环源的 GET 首页请求跟随重定向，避免宿主将 / 重定向至子路由时丢失 __APP_CONFIG__
+        if (!body && redirectLeft > 0 && status >= 300 && status < 400 && response.headers?.location) {
+          response.resume();
+          try {
+            const curParsed = new URL(url);
+            const nextParsed = new URL(response.headers.location, curParsed);
+            if (nextParsed.origin === curParsed.origin && isLoopbackHost(nextParsed.hostname)) {
+              resolve(requestRaw(nextParsed.toString(), null, null, cookieMap, redirectLeft - 1));
+              return;
+            }
+          } catch {}
+        }
+        const chunks = [];
+        response.on('data', chunk => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          if (status === 200) {
+            resolve({ statusCode: status, text });
+          } else {
+            const err = new Error(`HTTP ${status}: ${text.slice(0, 200)}`);
+            err.statusCode = status;
+            reject(err);
+          }
+        });
       }
     );
     req.setTimeout(20000, () => req.destroy(new Error('Local API timeout')));
@@ -610,29 +710,81 @@ function request(url, body, token) {
   });
 }
 
+async function request(url, body, token, cookieMap = null) {
+  const res = await requestRaw(url, body, token, cookieMap);
+  return res.text;
+}
+
 async function connectOrigin(rawOrigin, page = null, origins = null) {
   const origin = normalizeLoopbackOrigin(rawOrigin);
   if (!origin) {
     throw new Error('非法的本机回环页面地址');
   }
-  const html = await request(origin + '/');
-  const m = html.match(/window\.__APP_CONFIG__\s*=\s*(.*?);/);
-  if (!m) throw new Error('未能提取宿主 CSRF 令牌');
-  const token = JSON.parse(m[1]).csrfToken;
+  const cookieMap = new Map();
+  let token = '';
+
+  const refreshAuth = async () => {
+    const html = await request(origin + '/', null, null, cookieMap);
+    const cfg = extractAppConfigFromHtml(html);
+    if (!cfg || !cfg.csrfToken) {
+      throw new Error('未能提取宿主 CSRF 令牌');
+    }
+    token = String(cfg.csrfToken);
+    return token;
+  };
+
+  await refreshAuth();
+
   return {
     origin,
     page,
     origins: Array.isArray(origins) && origins.length ? origins : [origin],
-    call: async (method, body) => JSON.parse(
-      await request(`${origin}/exa.language_server_pb.LanguageServerService/${method}`, body, token)
-    )
+    refreshAuth,
+    call: async (method, body) => {
+      const endpoint = `${origin}/exa.language_server_pb.LanguageServerService/${method}`;
+      try {
+        return JSON.parse(await request(endpoint, body, token, cookieMap));
+      } catch (err) {
+        const status = Number(err?.statusCode || 0);
+        const msg = String(err?.message || '');
+        // 遇到 401/403 或 CSRF 失效时，自动重拉宿主首页刷新 CSRF 与会话 Cookie 并重试一次
+        if (status === 401 || status === 403 || /HTTP 40[13]|csrf|unauthenticated/i.test(msg)) {
+          await refreshAuth();
+          return JSON.parse(await request(endpoint, body, token, cookieMap));
+        }
+        throw err;
+      }
+    }
   };
 }
 
 async function connect(options = {}) {
   const explicitOrigin = normalizeLoopbackOrigin(options?.origin);
   if (explicitOrigin) {
-    return connectOrigin(explicitOrigin, null, [explicitOrigin]);
+    try {
+      return await connectOrigin(explicitOrigin, null, [explicitOrigin]);
+    } catch (explicitErr) {
+      // 当原窗口 origin 因语言服务重启或端口变更失效时，自动回退通过 CDP 发现最新活跃 Hub origin
+      if (options?.fallbackDiscover !== false) {
+        try {
+          const discovery = await discoverCdpTargets(options);
+          if (discovery.ok && discovery.matchedTargets.length) {
+            const hubTarget = discovery.matchedTargets.find(item => {
+              const o = normalizeLoopbackOrigin(item.url);
+              return o && o !== explicitOrigin;
+            }) || discovery.matchedTargets.find(item => normalizeLoopbackOrigin(item.url));
+            const nextOrigin = normalizeLoopbackOrigin(hubTarget?.url);
+            if (nextOrigin && nextOrigin !== explicitOrigin) {
+              const origins = Array.from(new Set(
+                discovery.matchedTargets.map(item => normalizeLoopbackOrigin(item.url)).filter(Boolean)
+              ));
+              return await connectOrigin(nextOrigin, hubTarget, origins);
+            }
+          }
+        } catch {}
+      }
+      throw explicitErr;
+    }
   }
   const discovery = await discoverCdpTargets(options);
   if (!discovery.ok || !discovery.matchedTargets.length) {
@@ -656,6 +808,7 @@ module.exports = {
   isAntigravityHubUrl,
   isAntigravityFallbackWorkbenchUrl,
   extractTargetOrigin,
+  extractAppConfigFromHtml,
   selectAntigravityTargets,
   discoverCdpTargets,
   openCdpSession,

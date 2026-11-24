@@ -44,12 +44,22 @@ function getNode(header, relPath) {
 }
 
 const builtinAsar = {
-  extractFile(archivePath, relPath) {
+  extractFile(archivePath, relPath, extractOptions = {}) {
     const rawFs = getRawFs();
     const { header, baseOffset } = readHeader(archivePath);
     const node = getNode(header, relPath);
     if (node.unpacked) {
-      return rawFs.readFileSync(path.join(archivePath + '.unpacked', relPath));
+      const primaryUnpacked = path.join(archivePath + '.unpacked', relPath);
+      if (rawFs.existsSync(primaryUnpacked)) {
+        return rawFs.readFileSync(primaryUnpacked);
+      }
+      if (extractOptions && extractOptions.fallbackUnpackedDir) {
+        const fallbackUnpacked = path.join(extractOptions.fallbackUnpackedDir, relPath);
+        if (rawFs.existsSync(fallbackUnpacked)) {
+          return rawFs.readFileSync(fallbackUnpacked);
+        }
+      }
+      return rawFs.readFileSync(primaryUnpacked);
     }
     const buf = Buffer.alloc(node.size);
     const fd = rawFs.openSync(archivePath, 'r');
@@ -80,7 +90,7 @@ const builtinAsar = {
     return list;
   },
 
-  extractAll(archivePath, destDir) {
+  extractAll(archivePath, destDir, extractOptions = {}) {
     const rawFs = getRawFs();
     const { header, baseOffset } = readHeader(archivePath);
     const fd = rawFs.openSync(archivePath, 'r');
@@ -102,8 +112,15 @@ const builtinAsar = {
               try { fs.symlinkSync(relLink, targetPath); } catch {}
             }
           } else if (info.unpacked) {
-            const unpackedSrc = path.join(archivePath + '.unpacked', relPath);
-            if (rawFs.existsSync(unpackedSrc)) {
+            const primaryUnpacked = path.join(archivePath + '.unpacked', relPath);
+            const fallbackUnpacked = extractOptions && extractOptions.fallbackUnpackedDir
+              ? path.join(extractOptions.fallbackUnpackedDir, relPath)
+              : null;
+            // 从独立备份 ASAR 解压时，备份目录旁没有 .unpacked，需回退到正式安装目录下的 app.asar.unpacked 以免丢失外部原生模块
+            const unpackedSrc = rawFs.existsSync(primaryUnpacked)
+              ? primaryUnpacked
+              : (fallbackUnpacked && rawFs.existsSync(fallbackUnpacked) ? fallbackUnpacked : null);
+            if (unpackedSrc) {
               fs.mkdirSync(path.dirname(targetPath), { recursive: true });
               rawFs.copyFileSync(unpackedSrc, targetPath);
               if (info.executable && process.platform !== 'win32') {

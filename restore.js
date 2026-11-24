@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { getStateDir, builtinAsar, collectUnpackedPaths, loadAsarEngine } = require('./asar-engine');
-const { acquireFileLock } = require('./modules-config');
+const { acquireFileLock, invalidateDiskModulesCache } = require('./modules-config');
 const { discoverCdpTargets, openCdpSession } = require('./local-api');
 const {
   TAGS,
@@ -119,11 +119,17 @@ async function restore(options = {}) {
     }
 
     const hasMeterTraces = Boolean(
-      targetValid && currentUtilsRaw && (
-        currentUtilsRaw.includes('installContextMeter') ||
-        currentUtilsRaw.includes('bootstrapAutoAttach') ||
-        currentUtilsRaw.includes(TAGS.METER_UTILS_START) ||
-        currentUtilsRaw.includes(TAGS.PROXY_START)
+      targetValid && (
+        (currentUtilsRaw && (
+          currentUtilsRaw.includes('installContextMeter') ||
+          currentUtilsRaw.includes('bootstrapAutoAttach') ||
+          currentUtilsRaw.includes(TAGS.METER_UTILS_START) ||
+          currentUtilsRaw.includes(TAGS.PROXY_START)
+        )) ||
+        (currentPreloadRaw && (
+          currentPreloadRaw.includes(TAGS.METER_PRELOAD_START) ||
+          currentPreloadRaw.includes(TAGS.CHINESE_START)
+        ))
       )
     );
 
@@ -177,14 +183,28 @@ async function restore(options = {}) {
     }
 
     if (!inPlaceExplicit && validBackup && versionMatches && currentInstalledSha === info.patchedSha256 && !force) {
+      const tempBackupReplace = path.join(path.dirname(targetFile), `app.asar.backup_restore_${Date.now()}`);
       try {
-        fs.copyFileSync(validBackup, targetFile);
+        if (process.platform !== 'win32') {
+          fs.copyFileSync(validBackup, tempBackupReplace);
+          try {
+            fs.renameSync(tempBackupReplace, targetFile);
+          } catch (renErr) {
+            if (renErr && renErr.code === 'EXDEV') fs.copyFileSync(tempBackupReplace, targetFile);
+            else throw renErr;
+          }
+        } else {
+          fs.copyFileSync(validBackup, targetFile);
+        }
         clearAsarCache(targetFile);
+        invalidateDiskModulesCache(targetFile);
       } catch (err) {
         if (err.code === 'EBUSY' || err.code === 'EPERM') {
           throw new Error(`无法还原目标文件 (${targetFile})：文件正被运行中的 Antigravity 锁定。请先完全退出 Antigravity 客户端后再运行！`);
         }
         throw err;
+      } finally {
+        try { if (fs.existsSync(tempBackupReplace)) fs.unlinkSync(tempBackupReplace); } catch {}
       }
       if (sha(targetFile) !== validExpectedSha) {
         throw new Error('Restored file checksum mismatch');
@@ -288,8 +308,18 @@ async function restore(options = {}) {
           let restoreCommitted = false;
           try {
             try {
-              fs.copyFileSync(tempReplacement, targetFile);
+              if (process.platform !== 'win32') {
+                try {
+                  fs.renameSync(tempReplacement, targetFile);
+                } catch (renErr) {
+                  if (renErr && renErr.code === 'EXDEV') fs.copyFileSync(tempReplacement, targetFile);
+                  else throw renErr;
+                }
+              } else {
+                fs.copyFileSync(tempReplacement, targetFile);
+              }
               clearAsarCache(targetFile);
+              invalidateDiskModulesCache(targetFile);
             } catch (err) {
               if (err.code === 'EBUSY' || err.code === 'EPERM') {
                 throw new Error(`无法还原目标文件 (${targetFile})：文件正被运行中的 Antigravity 锁定。请先完全退出 Antigravity 客户端后再运行！`);

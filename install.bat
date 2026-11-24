@@ -5,18 +5,18 @@ setlocal DisableDelayedExpansion
 cd /d "%~dp0"
 
 echo ========================================================
-echo   Antigravity Viewer Pulse v0.9.0 - 一键安装向导 (Windows)
+echo   Antigravity Viewer Pulse v0.10.0 - 一键安装向导 (Windows)
 echo ========================================================
 echo.
 
 where node >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-    echo [1/2] 已检测到系统 Node.js 运行时，开始正式注入安装...
-    node "%~dp0cli.js" setup %*
-    set "EXIT_CODE=%ERRORLEVEL%"
-    goto :FINISH
-)
+if %ERRORLEVEL% NEQ 0 goto :TRY_ELECTRON
+echo [1/2] 已检测到系统 Node.js 运行时，开始正式注入安装...
+node "%~dp0cli.js" setup %*
+set "EXIT_CODE=%ERRORLEVEL%"
+goto :FINISH
 
+:TRY_ELECTRON
 set "AG_EXE="
 if exist "%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe" set "AG_EXE=%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe"
 if not defined AG_EXE if exist "%ProgramFiles%\Antigravity\Antigravity.exe" set "AG_EXE=%ProgramFiles%\Antigravity\Antigravity.exe"

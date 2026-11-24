@@ -894,7 +894,7 @@ function writeBinarySafely(targetPath, oldBuf, newBuf, dirtyRanges = null) {
   }
 
   // 使用唯一后缀避免 Windows 运行期进程占用上一轮 .old_run 时二次热替换 rename 失败
-  contextUnlock.cleanupOldReplacedFiles(targetPath);
+  contextUnlock.cleanupOldReplacedFiles(path.dirname(targetPath), path.basename(targetPath));
   const uniqSuffix = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const stalePath = `${targetPath}.old_${uniqSuffix}`;
   const tmpNewPath = `${targetPath}.new_${process.pid}_${uniqSuffix}`;
@@ -978,7 +978,7 @@ async function writeBinarySafelyAsync(targetPath, oldBuf, newBuf, dirtyRanges = 
 
   try {
     if (typeof contextUnlock.cleanupOldReplacedFiles === 'function') {
-      contextUnlock.cleanupOldReplacedFiles(targetPath);
+      contextUnlock.cleanupOldReplacedFiles(path.dirname(targetPath), path.basename(targetPath));
     }
   } catch {}
   const uniqSuffix = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -1913,7 +1913,8 @@ async function applySingleEnhanceTargetCoreAsync(target, promptTier, chineseTitl
     if (!fs.existsSync(bakDir)) fs.mkdirSync(bakDir, { recursive: true });
     if (curTier === 0) {
       await fs.promises.copyFile(target.path, bakPath);
-      if (inspectChineseTitleRules(origDiskBuf).mode === 'zh') {
+      const initTitleMode = inspectChineseTitleRules(origDiskBuf).mode;
+      if (initTitleMode === 'zh' || initTitleMode === 'mixed') {
         bakBuf = Buffer.from(origDiskBuf);
         const bakDirty = [];
         applyChineseTitlePatchToBuffer(bakBuf, false, bakDirty);
@@ -1992,7 +1993,8 @@ async function applySingleEnhanceTargetCoreAsync(target, promptTier, chineseTitl
         bakBuf = existingBak;
       } else if (curTier === 0) {
         await fs.promises.copyFile(target.path, bakPath);
-        if (inspectChineseTitleRules(origDiskBuf).mode === 'zh') {
+        const refreshTitleMode = inspectChineseTitleRules(origDiskBuf).mode;
+        if (refreshTitleMode === 'zh' || refreshTitleMode === 'mixed') {
           const cleanStockBuf = Buffer.from(origDiskBuf);
           const bakDirty = [];
           applyChineseTitlePatchToBuffer(cleanStockBuf, false, bakDirty);

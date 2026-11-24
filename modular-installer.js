@@ -122,7 +122,18 @@ try {
   let _chromiumProxy = null;
   if (_proxyUrl) {
     _proxyUrl = _normalizeUrl(_proxyUrl);
-    _chromiumProxy = _proxyUrl.replace(/^socks5h:\\/\\//i, 'socks5://');
+    // Chromium 命令行 --proxy-server 与 proxyRules 均不支持内嵌账号密码且会在进程参数中暴露凭据，需剥离 userinfo
+    const _stripCreds = (_u) => {
+      try {
+        const _pUrl = new URL(_u);
+        _pUrl.username = '';
+        _pUrl.password = '';
+        return _normalizeUrl(_pUrl.toString());
+      } catch {
+        return String(_u || '').replace(/^([a-zA-Z0-9+.-]+:\\/\\/)[^/@]+@/, '$1');
+      }
+    };
+    _chromiumProxy = _stripCreds(_proxyUrl).replace(/^socks5h:\\/\\//i, 'socks5://');
     for (const _k of ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy']) {
       process.env[_k] = _proxyUrl;
     }

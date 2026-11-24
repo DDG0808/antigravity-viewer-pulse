@@ -14,8 +14,8 @@ const { PROJECT_VERSION } = require('./modules-config');
 
 test('1. Build pipeline generates valid meter-renderer.js with zero native ugly form controls', () => {
   const res = buildRenderer({ rootDir });
-  assert.equal(res.version, '0.9.1');
-  assert.equal(PROJECT_VERSION, '0.9.1');
+  assert.equal(res.version, '0.10.0');
+  assert.equal(PROJECT_VERSION, '0.10.0');
   assert.ok(fs.existsSync(res.targetFile), 'meter-renderer.js should exist');
   assert.ok(res.bytes > 40000, 'meter-renderer.js should contain complete bundled styles, template & logic');
 
@@ -591,55 +591,55 @@ test('4. Online update system (DDG0808/antigravity-viewer-pulse), ZIP integrity 
   const repoBase = 'https://github.com/DDG0808/antigravity-viewer-pulse';
   assert.deepEqual(core.parseSemver('v0.9.0'), { major: 0, minor: 9, patch: 0 });
   assert.deepEqual(core.parseSemver('v1.2.3'), { major: 1, minor: 2, patch: 3 });
-  assert.equal(core.compareVersions('0.9.1', '0.9.0'), 1);
+  assert.equal(core.compareVersions('0.10.0', '0.9.1'), 1);
   assert.equal(core.compareVersions('1.0.0', '0.9.9'), 1);
   assert.equal(core.compareVersions('0.9.0', '0.9.0'), 0);
 
   const mockReleases = [
     {
-      tag_name: 'v0.9.0',
-      draft: false,
-      prerelease: false,
-      html_url: `${repoBase}/releases/tag/v0.9.0`,
-      body: 'Current release',
-      assets: []
-    },
-    {
       tag_name: 'v0.9.1',
       draft: false,
       prerelease: false,
       html_url: `${repoBase}/releases/tag/v0.9.1`,
-      body: '### Hotfix v0.9.1',
+      body: 'Previous release',
+      assets: []
+    },
+    {
+      tag_name: 'v0.10.0',
+      draft: false,
+      prerelease: false,
+      html_url: `${repoBase}/releases/tag/v0.10.0`,
+      body: '### Release v0.10.0',
       assets: [
-        { name: 'antigravity-viewer-pulse_0.9.1_darwin_arm64.zip', browser_download_url: `${repoBase}/releases/download/v0.9.1/antigravity-viewer-pulse_0.9.1_darwin_arm64.zip` },
-        { name: 'antigravity-viewer-pulse_0.9.1_windows_amd64.zip', browser_download_url: `${repoBase}/releases/download/v0.9.1/antigravity-viewer-pulse_0.9.1_windows_amd64.zip` },
-        { name: 'checksums.txt', browser_download_url: `${repoBase}/releases/download/v0.9.1/checksums.txt` }
+        { name: 'antigravity-viewer-pulse_0.10.0_darwin_arm64.zip', browser_download_url: `${repoBase}/releases/download/v0.10.0/antigravity-viewer-pulse_0.10.0_darwin_arm64.zip` },
+        { name: 'antigravity-viewer-pulse_0.10.0_windows_amd64.zip', browser_download_url: `${repoBase}/releases/download/v0.10.0/antigravity-viewer-pulse_0.10.0_windows_amd64.zip` },
+        { name: 'checksums.txt', browser_download_url: `${repoBase}/releases/download/v0.10.0/checksums.txt` }
       ]
     }
   ];
 
-  const filtered = core.filterReleases(mockReleases, '0.9.0');
+  const filtered = core.filterReleases(mockReleases, '0.9.1');
   assert.equal(filtered.length, 1);
-  assert.equal(filtered[0].version, '0.9.1');
+  assert.equal(filtered[0].version, '0.10.0');
 
   const matchedDarwin = core.findReleaseAsset(filtered[0].assets, 'darwin', 'arm64');
-  assert.equal(matchedDarwin.packageAsset?.name, 'antigravity-viewer-pulse_0.9.1_darwin_arm64.zip');
+  assert.equal(matchedDarwin.packageAsset?.name, 'antigravity-viewer-pulse_0.10.0_darwin_arm64.zip');
   assert.equal(matchedDarwin.checksumAsset?.name, 'checksums.txt');
 
   const matchedWin = core.findReleaseAsset(filtered[0].assets, 'win32', 'x64');
-  assert.equal(matchedWin.packageAsset?.name, 'antigravity-viewer-pulse_0.9.1_windows_amd64.zip');
+  assert.equal(matchedWin.packageAsset?.name, 'antigravity-viewer-pulse_0.10.0_windows_amd64.zip');
 
   assert.equal(core.isValidExternalUrl(repoBase), true);
   assert.equal(core.isValidExternalUrl(`${repoBase}/releases/tag/v0.9.0`), true);
 
   const manifestInfo = validateManifest();
-  assert.equal(manifestInfo.version, '0.9.1');
+  assert.equal(manifestInfo.version, '0.10.0');
   assert.ok(manifestInfo.liveRuntimeFiles.includes('scripts/macos-setup.js'));
   assert.ok(manifestInfo.liveRuntimeFiles.includes('meter-renderer.js'));
 
   const tmpZipDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pulse-zip-test-'));
   try {
-    const testZipPath = path.join(tmpZipDir, 'antigravity-viewer-pulse_0.9.1_darwin_arm64.zip');
+    const testZipPath = path.join(tmpZipDir, 'antigravity-viewer-pulse_0.10.0_darwin_arm64.zip');
     createZipArchive(testZipPath, [
       { src: path.join(rootDir, 'package.json'), arc: 'package.json' },
       { src: path.join(rootDir, 'install.sh'), arc: 'install.sh' }
@@ -649,8 +649,8 @@ test('4. Online update system (DDG0808/antigravity-viewer-pulse), ZIP integrity 
       execFileSync('unzip', ['-t', testZipPath], { stdio: 'pipe' });
     }
     const zipHash = crypto.createHash('sha256').update(fs.readFileSync(testZipPath)).digest('hex');
-    const checksumLine = `${zipHash}  antigravity-viewer-pulse_0.9.1_darwin_arm64.zip`;
-    assert.match(checksumLine, /^[0-9a-f]{64}\s+antigravity-viewer-pulse_0\.9\.1_darwin_arm64\.zip$/);
+    const checksumLine = `${zipHash}  antigravity-viewer-pulse_0.10.0_darwin_arm64.zip`;
+    assert.match(checksumLine, /^[0-9a-f]{64}\s+antigravity-viewer-pulse_0\.10\.0_darwin_arm64\.zip$/);
   } finally {
     fs.rmSync(tmpZipDir, { recursive: true, force: true });
   }
@@ -1169,6 +1169,1020 @@ test('8. HUD renderer regressions: external origin block, unsupported platform u
     api.setPanelLanguage('zh-TW');
     assert.equal(sr.getElementById('binaryUnlockBadge')?.textContent, '請求級注入就緒');
   } finally {
+    api.dispose();
+  }
+});
+
+test('9. v0.9.2 security boundary, IPC/Live-Host whitelist, redirect/ZIP hardening & cross-platform fixes', async () => {
+  const { isAntigravityFallbackWorkbenchUrl } = require('./local-api');
+  const { isAllowedDownloadRedirectUrl } = require('./meter-collector');
+  const { getProxyCandidatePaths } = require('./meter-proxy');
+  const { generateProxyUtilsCode } = require('./modular-installer');
+  const { cleanupOldReplacedFiles } = require('./meter-context-unlock');
+  const { registerMeterIpcHandlers } = require('./meter-main');
+  const { createLiveRequestHandler } = require('./live-host');
+  const { EventEmitter } = require('node:events');
+
+  // 1. S1: External URLs with workbench.html must be rejected; local/loopback allowed
+  assert.equal(isAntigravityFallbackWorkbenchUrl('https://evil.example/?p=workbench.html'), false);
+  assert.equal(isAntigravityFallbackWorkbenchUrl('https://evil.example/workbench.html'), false);
+  assert.equal(isAntigravityFallbackWorkbenchUrl('devtools://devtools/bundled/workbench.html'), false);
+  assert.equal(isAntigravityFallbackWorkbenchUrl('http://127.0.0.1:42000/workbench.html'), true);
+  assert.equal(isAntigravityFallbackWorkbenchUrl('file:///opt/app/workbench.html'), true);
+  assert.equal(isAntigravityFallbackWorkbenchUrl('vscode-file://vscode-app/index.html'), true);
+
+  // 2. S2: IPC handlers enforce module whitelist & block appOverride on restart-host
+  const handlers = new Map();
+  registerMeterIpcHandlers({
+    handle(channel, fn) { handlers.set(channel, fn); },
+    on() {}
+  });
+  const localEvt = {
+    sender: { getURL: () => 'https://127.0.0.1:43210/', mainFrame: { url: 'https://127.0.0.1:43210/' } }
+  };
+  localEvt.senderFrame = localEvt.sender.mainFrame;
+  const toggleEnhanceRes = await handlers.get('context-meter:toggle-module')(localEvt, 'enhance', true, {});
+  assert.equal(toggleEnhanceRes.ok, false, 'toggle-module must reject non-toggleable enhance key');
+
+  let evilRelaunchCalled = false;
+  const restartRes = await handlers.get('context-meter:restart-host')(localEvt, {
+    appOverride: { relaunch: () => { evilRelaunchCalled = true; }, quit: () => {} },
+    args: ['--injected']
+  });
+  assert.equal(evilRelaunchCalled, false, 'IPC restart-host must never accept renderer appOverride/args');
+  assert.equal(restartRes.supported, false);
+
+  // Live-Host HTTP route also rejects enhance toggle and decodes split UTF-8 safely
+  const liveHandler = createLiveRequestHandler({
+    api: { origin: 'https://127.0.0.1:43210', origins: ['https://127.0.0.1:43210'] },
+    secret: 'unit-test-secret'
+  });
+  const invokeLive = (route, payloadBufChunks) => new Promise((resolve) => {
+    const req = new EventEmitter();
+    req.method = 'POST';
+    req.url = route;
+    req.headers = { origin: 'https://127.0.0.1:43210', 'x-ag-context-token': 'unit-test-secret' };
+    req.destroy = () => {};
+    let status = 200;
+    let bodyOut = '';
+    const res = {
+      headersSent: false,
+      setHeader() {},
+      writeHead(code) { status = code; this.headersSent = true; },
+      end(str = '') { bodyOut += String(str); this.headersSent = true; resolve({ status, body: JSON.parse(bodyOut || '{}') }); }
+    };
+    void liveHandler(req, res);
+    process.nextTick(() => {
+      for (const ch of payloadBufChunks) req.emit('data', ch);
+      req.emit('end');
+    });
+  });
+  const utf8Json = Buffer.from(JSON.stringify({ name: 'enhance', enable: true, note: '中文测试边界' }), 'utf8');
+  const splitAt = utf8Json.indexOf(Buffer.from('中', 'utf8')) + 1;
+  const liveToggleRes = await invokeLive('/toggle-module', [utf8Json.subarray(0, splitAt), utf8Json.subarray(splitAt)]);
+  assert.equal(liveToggleRes.body.ok, false, 'live-host /toggle-module must reject enhance and parse split UTF-8 cleanly');
+
+  // 3. S3 & S5: Download redirect allowlist tightened; no tar/unzip fallback; Chromium proxy strips credentials
+  assert.equal(isAllowedDownloadRedirectUrl('https://attacker.githubusercontent.com/a.zip'), false);
+  assert.equal(isAllowedDownloadRedirectUrl('https://evil-github-production-release-asset.s3.amazonaws.com/a.zip'), false);
+  assert.equal(isAllowedDownloadRedirectUrl('https://objects.githubusercontent.com/github-production-release-asset-2e65be/a.zip'), true);
+  assert.equal(isAllowedDownloadRedirectUrl('https://release-assets.githubusercontent.com/a.zip'), true);
+  assert.equal(isAllowedDownloadRedirectUrl('https://github-production-release-asset-2e65be.s3.amazonaws.com/a.zip'), true);
+
+  const collectorSrc = fs.readFileSync(path.join(rootDir, 'meter-collector.js'), 'utf8');
+  assert.doesNotMatch(collectorSrc, /spawnSync\('unzip'/, 'OTA ZIP extraction must not fall back to external unzip');
+  assert.doesNotMatch(collectorSrc, /spawnSync\('tar'/, 'OTA ZIP extraction must not fall back to external tar');
+
+  const proxySnippet = generateProxyUtilsCode({ enabled: true, proxyUrl: 'http://alice:secret@127.0.0.1:7890' });
+  assert.match(proxySnippet, /_stripCreds/, 'Chromium proxy switch must strip userinfo credentials');
+
+  // 4. S4: release.yml least-privilege & no raw input interpolation inside run:
+  const workflowSrc = fs.readFileSync(path.join(rootDir, '.github/workflows/release.yml'), 'utf8');
+  assert.match(workflowSrc, /^permissions:\s*\n\s*contents:\s*read/m, 'Top-level workflow permissions must be contents: read');
+  assert.doesNotMatch(workflowSrc, /TAG="\$\{\{\s*github\.event\.inputs\.tag_name/, 'Workflow must not interpolate tag_name directly inside shell');
+
+  // 5. B4: cleanupOldReplacedFiles cleans both .old_<ts> and .old_<ts>_<rand5>
+  const tmpCleanDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pulse-clean-old-'));
+  try {
+    const baseName = 'language_server_windows_x64.exe';
+    fs.writeFileSync(path.join(tmpCleanDir, baseName), 'bin');
+    fs.writeFileSync(path.join(tmpCleanDir, `${baseName}.orig`), 'orig');
+    fs.writeFileSync(path.join(tmpCleanDir, `${baseName}.old_1700000000000`), 'old1');
+    fs.writeFileSync(path.join(tmpCleanDir, `${baseName}.old_1700000000001_a9f2k`), 'old2');
+    const cleanRes = cleanupOldReplacedFiles(tmpCleanDir, baseName);
+    assert.equal(cleanRes.cleaned.length, 2, 'Both .old_<ts> and .old_<ts>_<rand> must be cleaned');
+    assert.equal(fs.existsSync(path.join(tmpCleanDir, `${baseName}.orig`)), true, '.orig backup must remain untouched');
+    assert.equal(fs.existsSync(path.join(tmpCleanDir, baseName)), true, 'Target binary must remain untouched');
+  } finally {
+    fs.rmSync(tmpCleanDir, { recursive: true, force: true });
+  }
+
+  // 6. B6: Windows batch scripts flatten ERRORLEVEL check
+  const installBat = fs.readFileSync(path.join(rootDir, 'install.bat'), 'utf8');
+  const uninstallBat = fs.readFileSync(path.join(rootDir, 'uninstall.bat'), 'utf8');
+  assert.match(installBat, /if %ERRORLEVEL% NEQ 0 goto :TRY_ELECTRON/);
+  assert.match(uninstallBat, /if %ERRORLEVEL% NEQ 0 goto :TRY_ELECTRON/);
+
+  // 7. B9: Linux proxy config paths prioritize XDG_STATE_HOME (~/.local/state) before ~/.config
+  const linuxPaths = getProxyCandidatePaths(null, { platform: 'linux', homeDir: '/tmp/fake-linux-home', env: {} });
+  const stateIdx = linuxPaths.findIndex(p => p.includes(path.join('.local', 'state', 'AntigravityContextMeter', 'modules.json')));
+  const cfgIdx = linuxPaths.findIndex(p => p.includes(path.join('.config', 'AntigravityContextMeter', 'modules.json')));
+  assert.ok(stateIdx >= 0 && cfgIdx > stateIdx, 'Linux proxy lookup must check XDG_STATE_HOME before XDG_CONFIG_HOME');
+});
+
+test('10. v0.9.2 collector abort recovery, Speed Duel empty metric, WS dedup, Studio summary & cacheWrite/FX accuracy', async () => {
+  const core = require('./meter-core');
+  const { collect } = require('./meter-collector');
+  const https = require('node:https');
+  const { EventEmitter } = require('node:events');
+
+  // 1. B1: collect() supersedePrevious abort must clear pending so subsequent collect() succeeds
+  const origHttpsRequest = https.request;
+  const convA = 'aaaaaaaa-1111-2222-3333-444444444444';
+  const convB = 'bbbbbbbb-1111-2222-3333-444444444444';
+  let holdFirstReq = true;
+  let releaseFirst = null;
+  https.request = (arg1, arg2, arg3) => {
+    const cb = typeof arg2 === 'function' ? arg2 : arg3;
+    const opts = typeof arg2 === 'object' ? arg2 : {};
+    const reqPath = typeof arg1 === 'string' ? arg1 : String(arg1?.path || '/');
+    const reqEmitter = new EventEmitter();
+    reqEmitter.write = () => {};
+    reqEmitter.destroy = (err) => { if (err) process.nextTick(() => reqEmitter.emit('error', err)); };
+    reqEmitter.setTimeout = () => {};
+    if (opts.signal) {
+      opts.signal.addEventListener('abort', () => {
+        const abortErr = new Error('aborted');
+        abortErr.name = 'AbortError';
+        reqEmitter.emit('error', abortErr);
+      }, { once: true });
+    }
+    reqEmitter.end = () => {
+      const sendReply = () => {
+        if (opts.signal?.aborted) return;
+        const resEmitter = new EventEmitter();
+        resEmitter.statusCode = 200;
+        let payloadStr = '<html><script>window.__APP_CONFIG__ = {"csrfToken":"mock-csrf-2"};</script></html>';
+        if (reqPath.includes('GetCascadeTrajectoryGeneratorMetadata')) {
+          payloadStr = JSON.stringify({ generatorMetadata: [] });
+        } else if (reqPath.includes('GetCascadeTrajectory')) {
+          payloadStr = JSON.stringify({ numTotalSteps: 1, trajectory: { steps: [{ userInput: { items: [{ text: 'hi' }] } }] } });
+        }
+        if (typeof cb === 'function') cb(resEmitter);
+        resEmitter.emit('data', Buffer.from(payloadStr, 'utf8'));
+        resEmitter.emit('end');
+      };
+      if (holdFirstReq && reqPath.includes('GetCascadeTrajectory')) {
+        holdFirstReq = false;
+        releaseFirst = sendReply;
+      } else {
+        process.nextTick(sendReply);
+      }
+    };
+    return reqEmitter;
+  };
+  try {
+    const pA1 = collect('https://127.0.0.1:49998', convA, { supersedePrevious: true, force: true });
+    await new Promise(r => setTimeout(r, 20));
+    const pB = collect('https://127.0.0.1:49998', convB, { supersedePrevious: true, force: true });
+    const [resA1, resB] = await Promise.all([pA1, pB]);
+    assert.equal(resA1.abortedStale, true, 'First superseded collect() must resolve abortedStale');
+    assert.equal(resB.conversation, convB);
+    if (typeof releaseFirst === 'function') releaseFirst();
+    const resA2 = await collect('https://127.0.0.1:49998', convA, { supersedePrevious: true, force: true });
+    assert.notEqual(resA2.abortedStale, true, 'Subsequent collect() for convA must NOT be poisoned by aborted pending Promise');
+    assert.equal(resA2.conversation, convA);
+  } finally {
+    https.request = origHttpsRequest;
+  }
+
+  // 2. B2: renderSpeedDuelView with metric='ttft' when all groups lack TTFT must not crash
+  const chartsSrc = fs.readFileSync(path.join(rootDir, 'src/renderer/charts.js'), 'utf8');
+  const chartsCtx = { console, Math, Number, Array, String, Boolean };
+  vm.createContext(chartsCtx);
+  vm.runInContext(chartsSrc, chartsCtx, { filename: 'charts.js' });
+  const mockBars = { innerHTML: '', querySelectorAll: () => [] };
+  const mockSvg = { innerHTML: '', querySelectorAll: () => [] };
+  const mockTitle = { textContent: '' };
+  const mockMed = { textContent: '' };
+  assert.doesNotThrow(() => {
+    chartsCtx.renderSpeedDuelView(
+      mockBars,
+      mockSvg,
+      mockTitle,
+      mockMed,
+      [{ key: 'm1', modelLabel: 'Model A', count: 3, medianTps: 88.5, medianTtft: null, samples: [{ tps: 88.5 }] }],
+      'ttft'
+    );
+  }, 'Switching Speed Duel to ttft with no TTFT samples must not throw TypeError');
+  assert.equal(mockMed.textContent, 'n = 0');
+
+  // 3. D1 & D2: meter-core cacheWriteTokens accounting, flash-lite classification & local YYYY-MM-DD date parsing
+  assert.equal(core.normalizeModelId('gemini-2.5-flash-lite'), null, 'gemini-2.5-flash-lite must not be misclassified as 3.5-flash-lite');
+  assert.equal(core.normalizeModelId('gemini-3.5-flash-lite'), 'gemini-3.5-flash-lite');
+
+  const cwSummary = core.summarize({
+    chatModel: {
+      model: 'claude-opus-5-5',
+      usage: { inputTokens: 1000, cacheReadTokens: 2000, cacheWriteTokens: 5000, outputTokens: 500 },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+    }
+  });
+  assert.equal(cwSummary.cacheWrite, 5000);
+  assert.equal(cwSummary.input, 8000, 'summarize() input must include fresh + cacheRead + cacheWrite');
+  assert.equal(cwSummary.actual, 8500, 'summarize() actual must include cacheWriteTokens');
+
+  const unpricedCost = core.summarizeApiCost([
+    { model: 'unknown-experimental-model', inputTokens: 100, cacheReadTokens: 200, cacheWriteTokens: 700, outputTokens: 50 }
+  ]);
+  assert.equal(unpricedCost.unpricedTokens, 1050, 'summarizeApiCost unpricedTokens must include cacheWriteTokens');
+
+  const localDateCall = core.parseGeneratorCall({
+    stepIndices: [1],
+    date: '2026-05-01',
+    chatModel: { model: 'gemini-4-hydrogen', usage: { inputTokens: 10, outputTokens: 5 } }
+  }, 'conv-date', 'desktop');
+  assert.equal(localDateCall.timestamp, new Date(2026, 4, 1).getTime(), 'Pure YYYY-MM-DD must parse as local midnight');
+
+  // 4. B3, B5 & D2 in renderer HUD: Studio summary read, WS unrelated frame dedup preservation, negative cache saving label
+  const coreCode = fs.readFileSync(path.join(rootDir, 'meter-core.js'), 'utf8');
+  const rendererCode = fs.readFileSync(path.join(rootDir, 'meter-renderer.js'), 'utf8');
+  class TinyEl {
+    constructor(tag) {
+      this.tagName = String(tag || 'div').toUpperCase();
+      this.id = '';
+      this.className = '';
+      this.style = { setProperty() {}, removeProperty() {} };
+      this.dataset = {};
+      this.attrs = {};
+      this.children = [];
+      this.textContent = '';
+      this.value = '';
+      this.hidden = false;
+      this.disabled = false;
+      this._listeners = {};
+      this.classList = {
+        _s: new Set(),
+        add: (...c) => c.forEach(x => this.classList._s.add(x)),
+        remove: (...c) => c.forEach(x => this.classList._s.delete(x)),
+        toggle: (c, f) => { const on = f === undefined ? !this.classList._s.has(c) : Boolean(f); if (on) this.classList._s.add(c); else this.classList._s.delete(c); return on; },
+        contains: (c) => this.classList._s.has(c)
+      };
+    }
+    set innerHTML(v) { this._html = String(v); }
+    get innerHTML() { return this._html || ''; }
+    setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'id') this.id = String(v); }
+    getAttribute(k) { return this.attrs[k] ?? null; }
+    appendChild(ch) { ch.parentNode = this; this.children.push(ch); return ch; }
+    remove() { this.parentNode = null; }
+    addEventListener(ev, fn) { (this._listeners[ev] ||= []).push(fn); }
+    removeEventListener() {}
+    querySelector() { return null; }
+    querySelectorAll() { return []; }
+    getBoundingClientRect() { return { left: 100, top: 0, right: 300, bottom: 32, width: 200, height: 32 }; }
+    getContext() { return { save() {}, restore() {}, setTransform() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, quadraticCurveTo() {}, closePath() {}, stroke() {}, fill() {}, arc() {}, createLinearGradient: () => ({ addColorStop() {} }) }; }
+    attachShadow() {
+      const byId = new Map();
+      const mk = (id) => { if (!byId.has(id)) { const e = new TinyEl('div'); e.id = id; byId.set(id, e); } return byId.get(id); };
+      this.shadowRoot = { innerHTML: '', getElementById: (id) => mk(id), querySelector: () => null, querySelectorAll: () => [], activeElement: null };
+      return this.shadowRoot;
+    }
+  }
+  const bodyEl = new TinyEl('body');
+  const fetchBodies = [];
+  function FakeWs(url) { this.url = url; }
+  FakeWs.prototype.send = function () {};
+  const sb = {
+    console, setTimeout, clearTimeout, setInterval, clearInterval,
+    AbortController, URL, URLSearchParams, TextEncoder, TextDecoder,
+    Uint8Array, ArrayBuffer, DataView, Promise, Map, Set, Date, Math, JSON, Number, String, Boolean, Array, Object, RegExp, Error,
+    WebSocket: FakeWs,
+    innerWidth: 1280, innerHeight: 800, devicePixelRatio: 2,
+    location: { protocol: 'https:', hostname: '127.0.0.1', origin: 'https://127.0.0.1:43210', href: 'https://127.0.0.1:43210/conv/12345678-1234-1234-1234-123456789abc', pathname: '/conv/12345678-1234-1234-1234-123456789abc' },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    getComputedStyle: () => ({ getPropertyValue: () => '#38bdf8' }),
+    __APP_CONFIG__: { csrfToken: 'test-csrf-v092' },
+    fetch: async (url, init) => {
+      if (String(url).includes('SendUserCascadeMessage')) {
+        fetchBodies.push(init?.body);
+        return { ok: true, json: async () => ({}) };
+      }
+      if (String(url).includes('GetCascadeTrajectoryGeneratorMetadata')) {
+        return {
+          ok: true,
+          json: async () => ({
+            generatorMetadata: [{
+              stepIndices: [1],
+              chatModel: {
+                model: 'claude-opus-5-5',
+                usage: { inputTokens: 1000, cacheReadTokens: 1000, cacheWriteTokens: 100000, outputTokens: 200 },
+                chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+              }
+            }]
+          })
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+    contextMeterAPI: {
+      getSettings: async () => ({ ok: true, uiPreferences: {}, contextPreferences: {} }),
+      saveSettings: async () => ({ ok: true }),
+      getQuota: async () => ({ ok: true, data: { snapshot: { pools: [] }, cascadeModelConfigs: [{ modelId: 'MODEL_GEMINI_3_1_PRO', label: 'Gemini 3.1 Pro', maxTokens: 1048576, maxOutputTokens: 65536 }] } }),
+      getTokenHistory: async () => ({ ok: true, data: { daily: {}, speedRecords: [] } }),
+      getContextUnlockStatus: async () => ({ ok: true, data: { status: 'unsupported', isPlatformSupported: false } }),
+      getEnhanceStatus: async () => ({ ok: true, data: { summary: { promptTier: 3, chineseTitleEnabled: true, pendingLsRestart: true } } }),
+      getModulesStatus: async () => ({ ok: true, data: { modules: {} } }),
+      getRuntimeInfo: async () => ({ ok: true, backendSource: 'electron-ipc', backendVersion: '0.10.0' }),
+      scan: async () => ({ ok: true, data: { session: { files: [] } } })
+    },
+    document: {
+      hidden: false,
+      body: bodyEl,
+      documentElement: bodyEl,
+      createElement: (t) => new TinyEl(t),
+      getElementById: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener() {},
+      removeEventListener() {}
+    },
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  sb.window = sb;
+  sb.globalThis = sb;
+  vm.createContext(sb);
+  vm.runInContext(coreCode, sb, { filename: 'meter-core.js' });
+  vm.runInContext(rendererCode, sb, { filename: 'meter-renderer.js' });
+  await new Promise(r => setTimeout(r, 90));
+  const api = sb.__AGContextMeter;
+  try {
+    const hostEl = bodyEl.children.find(n => n.id === 'ag-context-meter');
+    const sr = hostEl.shadowRoot;
+
+    // B3: Studio status must read eRes.data.summary (pendingLsRestart -> restart banner visible, zhTitle on)
+    assert.equal(sr.getElementById('btnRestartBanner')?.hidden, false, 'pendingLsRestart from enhance-status summary must reveal restart banner');
+    assert.equal(sr.getElementById('toggleZhTitle')?.classList.contains('on'), true, 'chineseTitleEnabled from enhance-status summary must toggle UI on');
+
+    // D2: Negative net cache savings on cold Claude write must NEVER render "省 $-"
+    await api.pollTrajectoryForTest();
+    const audBadge = sr.getElementById('audSessSavedBadge')?.textContent || '';
+    const heroSub = sr.getElementById('heroCacheSessSub')?.textContent || '';
+    assert.doesNotMatch(audBadge, /省\s*\$-/, 'Negative net savings must not render "省 $-"');
+    assert.doesNotMatch(heroSub, /省\s*\$-/, 'Cockpit negative net savings must not render "省 $-"');
+
+    // B5: Unrelated WS ping between decorator hook & fetch must NOT consume lastDecoratorDispatch
+    await api.setModelBudgetForTest('Gemini 3.1 Pro', 512000, 'per_model');
+    const reqObj = { cascadeId: '12345678-1234-1234-1234-123456789abc', items: [{ text: 'hello' }] };
+    sb.__AG_METER_ON_SEND_MESSAGE__(reqObj, 'client_object');
+    const ws = new sb.WebSocket('ws://127.0.0.1:43210/ws');
+    ws.send('{"type":"ping"}');
+    const wire = JSON.stringify(reqObj);
+    await sb.fetch('/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage', {
+      method: 'POST',
+      headers: [['Content-Type', 'application/json']],
+      body: wire
+    });
+    assert.equal(fetchBodies[0], wire, 'Unrelated WS frame must not wipe decorator dedup marker before real fetch');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('11. v0.10.0 Proxy Profiles validation/persistence & Windows Update Guard XML/VBS/CMD builder', async () => {
+  const modulesConfig = require('./modules-config');
+  const setupMod = require('./scripts/macos-setup');
+
+  // 11a. Proxy profiles sanitization (strict rejects bad schemes, non-strict filters & caps at 12)
+  const badStrict = modulesConfig.sanitizeProxyProfiles(
+    [{ id: 'bad1', name: 'Evil', proxyUrl: 'javascript:alert(1)' }],
+    { strict: true }
+  );
+  assert.equal(badStrict.ok, false, 'Strict sanitizeProxyProfiles must reject non-proxy schemes');
+  assert.match(badStrict.error || '', /无效|协议|地址/i);
+
+  const rawMany = Array.from({ length: 15 }, (_, idx) => ({
+    id: `p_${idx}`,
+    name: `Node ${idx}`,
+    proxyUrl: `http://127.0.0.1:${7890 + idx}`
+  }));
+  rawMany.push({ id: 'bad', name: 'Bad', proxyUrl: 'ftp://127.0.0.1:21' });
+  const cleanedRes = modulesConfig.sanitizeProxyProfiles(rawMany, { strict: false });
+  assert.equal(cleanedRes.ok, true);
+  assert.equal(cleanedRes.profiles.length, 12, 'Proxy profiles must be capped at 12 entries');
+  assert.equal(cleanedRes.profiles[0].name, 'Node 0');
+  assert.equal(cleanedRes.profiles[0].proxyUrl, 'http://127.0.0.1:7890');
+
+  // 11b. Persist & reload profiles in isolated temp stateDir
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'pulse-v010-prof-'));
+  try {
+    const cfg = modulesConfig.loadModulesConfig({ stateDir: tmpState });
+    cfg.modules.proxy.enabled = true;
+    cfg.modules.proxy.proxyUrl = 'socks5://127.0.0.1:10808';
+    cfg.modules.proxy.profiles = [
+      { id: 'clash', name: 'Clash Verge', proxyUrl: 'http://127.0.0.1:7897' },
+      { id: 'v2ray', name: 'V2Ray Socks', proxyUrl: 'socks5://127.0.0.1:10808' }
+    ];
+    cfg.modules.proxy.activeProfileId = 'v2ray';
+    modulesConfig.saveModulesConfig(cfg, { stateDir: tmpState });
+    const reloaded = modulesConfig.loadModulesConfig({ stateDir: tmpState });
+    assert.equal(reloaded.modules.proxy.profiles.length, 2);
+    assert.equal(reloaded.modules.proxy.activeProfileId, 'v2ray');
+    assert.equal(reloaded.modules.proxy.profiles[1].proxyUrl, 'socks5://127.0.0.1:10808');
+  } finally {
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+
+  // 11c. Windows Update Guard script & Task Scheduler XML generation
+  assert.equal(setupMod.WIN_GUARD_TASK_NAME, 'AntigravityPulseUpdateGuard');
+  const guardFiles = setupMod.buildWindowsGuardFiles({
+    nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+    cliPath: 'C:\\ProgramData\\AntigravityPulse\\live-runtime\\cli.js',
+    asarPath: 'C:\\Program Files\\Antigravity\\resources\\app.asar',
+    logPath: 'C:\\ProgramData\\AntigravityPulse\\guard-sync.log',
+    cmdPath: 'C:\\ProgramData\\AntigravityPulse\\guard-sync.cmd',
+    isElectronNode: false
+  });
+  assert.match(guardFiles.cmdContent, /guard-sync/, 'guard-sync.cmd should invoke cli.js guard-sync');
+  assert.match(guardFiles.cmdContent, /set "ELECTRON_RUN_AS_NODE="/, 'Non-Electron node must clear ELECTRON_RUN_AS_NODE');
+  assert.match(guardFiles.vbsContent, /WScript\.Shell/, 'guard-sync.vbs should run silently via WScript.Shell');
+  assert.match(guardFiles.vbsContent, /,\s*0,\s*False/, 'guard-sync.vbs must hide console window (windowStyle=0)');
+
+  const xml = setupMod.buildWindowsGuardTaskXml({ vbsPath: 'C:\\ProgramData\\AntigravityPulse\\guard-sync.vbs' });
+  assert.match(xml, /encoding="UTF-16"/, 'Windows Task Scheduler XML must declare UTF-16');
+  assert.match(xml, /<LogonTrigger>/, 'Task XML must trigger on user logon');
+  assert.match(xml, /<Interval>PT2H<\/Interval>/, 'Task XML must run every 2 hours');
+  assert.match(xml, /<Command>wscript\.exe<\/Command>/, 'Task XML must execute via wscript.exe to prevent console flash');
+});
+
+test('12. v0.10.0 HUD Ledger CSV/JSON export, model cost ranking, Audit compaction timeline, Markdown snapshot & Alt+Shift+P', async () => {
+  const built = buildRenderer({ rootDir });
+  const coreCode = fs.readFileSync(path.join(rootDir, 'meter-core.js'), 'utf8');
+  const rendererCode = fs.readFileSync(built.targetFile, 'utf8');
+
+  class MiniClassList {
+    constructor() { this.set = new Set(); }
+    add(...names) { names.forEach(n => this.set.add(n)); }
+    remove(...names) { names.forEach(n => this.set.delete(n)); }
+    toggle(name, force) {
+      if (force === undefined) {
+        if (this.set.has(name)) { this.set.delete(name); return false; }
+        this.set.add(name); return true;
+      }
+      if (force) this.set.add(name); else this.set.delete(name);
+      return Boolean(force);
+    }
+    contains(name) { return this.set.has(name); }
+  }
+  class MiniEl {
+    constructor(tag = 'div', id = '') {
+      this.tagName = String(tag).toUpperCase();
+      this.id = id;
+      this.dataset = {};
+      this.style = { setProperty() {} };
+      this.classList = new MiniClassList();
+      this.children = [];
+      this.listeners = new Map();
+      this.attributes = new Map();
+      this.textContent = '';
+      this.value = '';
+      this.hidden = false;
+      this.disabled = false;
+      this.shadowRoot = null;
+      this._innerHTML = '';
+    }
+    set innerHTML(html) {
+      this._innerHTML = String(html || '');
+      if (this._nodesById) {
+        const re = /id=["']([^"']+)["']/g;
+        let m;
+        while ((m = re.exec(this._innerHTML)) !== null) {
+          if (!this._nodesById.has(m[1])) this._nodesById.set(m[1], new MiniEl('div', m[1]));
+        }
+      }
+    }
+    get innerHTML() { return this._innerHTML; }
+    setAttribute(k, v) {
+      this.attributes.set(k, String(v));
+      if (k === 'id') this.id = String(v);
+      if (k.startsWith('data-')) {
+        const key = k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        this.dataset[key] = String(v);
+      }
+    }
+    getAttribute(k) { return this.attributes.has(k) ? this.attributes.get(k) : null; }
+    appendChild(child) { this.children.push(child); return child; }
+    remove() {}
+    closest() { return null; }
+    focus() {}
+    select() {}
+    click() {
+      const fns = this.listeners.get('click') || [];
+      fns.forEach(fn => fn({ target: this, preventDefault() {}, stopPropagation() {} }));
+    }
+    querySelector() { return null; }
+    querySelectorAll() { return []; }
+    addEventListener(type, fn) {
+      if (!this.listeners.has(type)) this.listeners.set(type, []);
+      this.listeners.get(type).push(fn);
+    }
+    removeEventListener(type, fn) {
+      if (!this.listeners.has(type)) return;
+      this.listeners.set(type, this.listeners.get(type).filter(f => f !== fn));
+    }
+    attachShadow() {
+      const nodesById = new Map();
+      const sr = {
+        _nodesById: nodesById,
+        activeElement: null,
+        set innerHTML(html) {
+          this._html = String(html || '');
+          const re = /id=["']([^"']+)["']/g;
+          let m;
+          while ((m = re.exec(this._html)) !== null) {
+            if (!nodesById.has(m[1])) nodesById.set(m[1], new MiniEl('div', m[1]));
+          }
+        },
+        get innerHTML() { return this._html || ''; },
+        getElementById: (id) => nodesById.get(id) || null,
+        querySelector: () => null,
+        querySelectorAll: () => []
+      };
+      this.shadowRoot = sr;
+      return sr;
+    }
+    getBoundingClientRect() { return { left: 20, top: 20, width: 140, height: 32, right: 160, bottom: 52 }; }
+  }
+
+  const bodyEl = new MiniEl('body');
+  const docListeners = new Map();
+  let copiedClipboardText = '';
+  const sb = {
+    console, setTimeout, clearTimeout, setInterval, clearInterval, URL, URLSearchParams, TextDecoder, TextEncoder,
+    innerWidth: 1280, innerHeight: 800, devicePixelRatio: 2,
+    navigator: {
+      clipboard: {
+        writeText: async (txt) => { copiedClipboardText = String(txt); }
+      }
+    },
+    location: { protocol: 'https:', hostname: '127.0.0.1', origin: 'https://127.0.0.1:43210', href: 'https://127.0.0.1:43210/conv/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', pathname: '/conv/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    getComputedStyle: () => ({ getPropertyValue: () => '#38bdf8' }),
+    fetch: async () => ({ ok: true, json: async () => ({}) }),
+    contextMeterAPI: {
+      getSettings: async () => ({ ok: true, uiPreferences: {}, contextPreferences: {} }),
+      saveSettings: async () => ({ ok: true }),
+      getQuota: async () => ({
+        ok: true,
+        data: {
+          snapshot: {
+            pools: [{
+              key: 'gemini-3.1-pro',
+              label: 'Gemini 3.1 Pro',
+              remainingFraction: 0.85,
+              buckets: [{ tag: '5h', remainingFraction: 0.9, resetTime: new Date(Date.now() + 3600000).toISOString() }]
+            }]
+          },
+          cascadeModelConfigs: [{ modelId: 'MODEL_GEMINI_3_1_PRO', label: 'Gemini 3.1 Pro', maxTokens: 1048576, maxOutputTokens: 65536 }]
+        }
+      }),
+      getTokenHistory: async () => ({ ok: true, data: { daily: {}, speedRecords: [] } }),
+      getContextUnlockStatus: async () => ({ ok: true, data: { status: 'unsupported', isPlatformSupported: false } }),
+      getEnhanceStatus: async () => ({ ok: true, data: { summary: { promptTier: 0, chineseTitleEnabled: false } } }),
+      getModulesStatus: async () => ({
+        ok: true,
+        data: {
+          modules: {
+            proxy: {
+              enabled: true,
+              proxyUrl: 'http://127.0.0.1:7897',
+              activeProfileId: 'p1',
+              profiles: [{ id: 'p1', name: 'Clash', proxyUrl: 'http://127.0.0.1:7897' }]
+            }
+          }
+        }
+      }),
+      getRuntimeInfo: async () => ({ ok: true, backendSource: 'electron-ipc', backendVersion: '0.10.0' }),
+      scan: async () => ({ ok: true, data: { session: { files: [] } } })
+    },
+    document: {
+      hidden: false,
+      activeElement: null,
+      body: bodyEl,
+      documentElement: bodyEl,
+      createElement: (t) => new MiniEl(t),
+      getElementById: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener(type, fn) {
+        if (!docListeners.has(type)) docListeners.set(type, []);
+        docListeners.get(type).push(fn);
+      },
+      removeEventListener(type, fn) {
+        if (!docListeners.has(type)) return;
+        docListeners.set(type, docListeners.get(type).filter(f => f !== fn));
+      }
+    },
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  sb.window = sb;
+  sb.globalThis = sb;
+  vm.createContext(sb);
+  vm.runInContext(coreCode, sb, { filename: 'meter-core.js' });
+  vm.runInContext(rendererCode, sb, { filename: 'meter-renderer.js' });
+  await new Promise(r => setTimeout(r, 90));
+  const api = sb.__AGContextMeter;
+
+  try {
+    const hostEl = bodyEl.children.find(n => n.id === 'ag-context-meter');
+    const sr = hostEl.shadowRoot;
+
+    // 12a. Ledger CSV (with UTF-8 BOM) & JSON export + Per-Model Cost Ranking
+    api.setHistoryDataForTest({
+      daily: {
+        '2026-11-23': { inputTokens: 10000, cacheTokens: 40000, outputTokens: 5000, totalTokens: 55000, costUSD: 0.42 },
+        '2026-11-24': { inputTokens: 20000, cacheTokens: 80000, outputTokens: 10000, totalTokens: 110000, costUSD: 1.25 }
+      },
+      costEstimateBySource: {
+        all: {
+          pricedCostUSD: 1.67,
+          byModel: {
+            'claude-opus-5-5': { requests: 8, costUSD: 1.15, tokens: 95000 },
+            'gemini-3.1-pro-preview': { requests: 12, costUSD: 0.52, tokens: 70000 }
+          }
+        }
+      }
+    });
+
+    const csvExp = api.buildLedgerExportForTest('csv');
+    assert.ok(csvExp.content.startsWith('\uFEFFdate,source,total_tokens,'), 'CSV export must start with UTF-8 BOM and standard header');
+    assert.match(csvExp.content, /2026-11-24,all,110000,20000,80000,10000,80,1\.25/);
+
+    const jsonExp = api.buildLedgerExportForTest('json');
+    const parsedJson = JSON.parse(jsonExp.content);
+    assert.equal(parsedJson.version, '0.10.0');
+    assert.equal(parsedJson.daily.length, 2);
+    assert.equal(parsedJson.modelBreakdown.length, 2);
+    assert.equal(parsedJson.modelBreakdown[0].modelKey, 'claude-opus-5-5', 'Model ranking must sort by costUSD descending');
+    assert.ok(parsedJson.modelBreakdown[0].sharePct > 65, 'Top model cost share must exceed 65%');
+
+    // 12b. Audit session turn timeline auto-compaction & non-compaction cache drop detection
+    api.setSessionCallsForTest([
+      { callId: 'c1', model: 'claude-opus-5-5', inputTokens: 30000, cacheReadTokens: 0, outputTokens: 800, tps: 45, ttftSec: 1.2, costUSD: 0.18 },
+      { callId: 'c2', model: 'claude-opus-5-5', inputTokens: 5000, cacheReadTokens: 30000, outputTokens: 600, tps: 52, ttftSec: 0.9, costUSD: 0.06 },
+      // Auto-compaction: prompt drops from 35K -> 10K (<72%) with 0% cache hit -> MUST mark compacted, NOT cacheDrop
+      { callId: 'c3', model: 'claude-opus-5-5', inputTokens: 10000, cacheReadTokens: 0, outputTokens: 500, tps: 48, ttftSec: 1.0, costUSD: 0.05 },
+      { callId: 'c4', model: 'claude-opus-5-5', inputTokens: 2000, cacheReadTokens: 12000, outputTokens: 400, tps: 60, ttftSec: 0.8, costUSD: 0.03 },
+      // True cache drop without compaction: prompt stays >=14K, hit drops from 85% -> 0%
+      { callId: 'c5', model: 'claude-opus-5-5', inputTokens: 16000, cacheReadTokens: 0, outputTokens: 400, tps: 50, ttftSec: 1.1, costUSD: 0.09 }
+    ]);
+
+    const tl = api.buildTurnTimelineForTest();
+    assert.equal(tl.turns.length, 5);
+    assert.equal(tl.compactionCount, 1, 'Timeline must detect exactly 1 auto-compaction event');
+    assert.equal(tl.turns[2].compacted, true, 'Turn 3 (35K -> 10K) must be flagged as compacted');
+    assert.equal(tl.turns[2].cacheDrop, false, 'Compacted turn must NOT be flagged as cacheDrop');
+    assert.equal(tl.cacheDropCount, 1, 'Timeline must detect 1 genuine non-compaction cache drop');
+    assert.equal(tl.turns[4].cacheDrop, true, 'Turn 5 (85% -> 0% without shrink) must be flagged as cacheDrop');
+    assert.equal(sr.getElementById('audCompactionTag')?.hidden, false, 'Compaction badge must become visible');
+    assert.match(sr.getElementById('auditTimelineList')?.innerHTML || '', /自动压缩/);
+
+    // 12c. Privacy-safe Markdown Telemetry Snapshot & Clipboard copy
+    const mdSnap = api.buildTelemetrySnapshotForTest();
+    assert.match(mdSnap, /Antigravity Pulse v0\.10\.0/);
+    assert.match(mdSnap, /自动压缩 1 次/);
+    assert.doesNotMatch(mdSnap, /aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/, 'Markdown snapshot must not expose conversation ID');
+    sr.getElementById('btnCopySnapshot')?.click();
+    await new Promise(r => setTimeout(r, 20));
+    assert.match(copiedClipboardText, /Antigravity Pulse v0\.10\.0/, 'Clicking copy snapshot must write Markdown to clipboard');
+
+    // 12d. Alt+Shift+P global HUD toggle shortcut (and ignoring inside INPUT)
+    const keyHandlers = docListeners.get('keydown') || [];
+    assert.ok(keyHandlers.length > 0, 'Document keydown listener must be registered');
+    assert.equal(api.snapshot().hudOpen, false, 'HUD starts closed');
+    let prevented = false;
+    keyHandlers.forEach(fn => fn({ altKey: true, shiftKey: true, ctrlKey: false, metaKey: false, code: 'KeyP', key: 'P', preventDefault: () => { prevented = true; } }));
+    assert.equal(prevented, true, 'Alt+Shift+P should call preventDefault');
+    assert.equal(api.snapshot().hudOpen, true, 'Alt+Shift+P must open HUD');
+
+    // While focus is in an INPUT element, Alt+Shift+P must be ignored
+    sb.document.activeElement = new MiniEl('input');
+    keyHandlers.forEach(fn => fn({ altKey: true, shiftKey: true, ctrlKey: false, metaKey: false, code: 'KeyP', key: 'P', preventDefault() {} }));
+    assert.equal(api.snapshot().hudOpen, true, 'Alt+Shift+P must not toggle HUD while typing in INPUT');
+
+    // Clear focus -> Alt+Shift+P closes HUD
+    sb.document.activeElement = null;
+    keyHandlers.forEach(fn => fn({ altKey: true, shiftKey: true, ctrlKey: false, metaKey: false, code: 'KeyP', key: 'P', preventDefault() {} }));
+    assert.equal(api.snapshot().hudOpen, false, 'Second Alt+Shift+P must collapse HUD');
+
+    // 12e. Proxy profile chips rendered from backend status
+    assert.match(sr.getElementById('proxyProfileBar')?.innerHTML || '', /Clash/, 'Proxy profile chip must render in Studio');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('13. Long-running self-healing: route-switch requestBusy/scanBusy deadlock fix, CSRF 401/403 refresh, Cookie forwarding & stale quota recovery', async () => {
+  const http = require('node:http');
+  const localApi = require('./local-api');
+
+  // 13a. Backend local-api.js: multiline __APP_CONFIG__ parsing, Set-Cookie forwarding & 401 CSRF auto-refresh retry
+  const parsedMultiline = localApi.extractAppConfigFromHtml('<script>window.__APP_CONFIG__ = {\n  "csrfToken": "tok_multi_1",\n  "note": "a;b"\n}</script>');
+  assert.equal(parsedMultiline?.csrfToken, 'tok_multi_1', 'Must parse multiline __APP_CONFIG__ containing semicolons without trailing semicolon');
+
+  let getCount = 0;
+  let postCount = 0;
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/') {
+      getCount += 1;
+      const csrfVal = getCount === 1 ? 'csrf_v1' : 'csrf_v2';
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Set-Cookie': [`ag_sess=session_${getCount}; Path=/; HttpOnly`]
+      });
+      res.end(`<html><script>window.__APP_CONFIG__ = {\n  "csrfToken": "${csrfVal}"\n}</script></html>`);
+      return;
+    }
+    if (req.method === 'POST' && req.url.includes('GetUserStatus')) {
+      postCount += 1;
+      const gotCsrf = req.headers['x-codeium-csrf-token'];
+      const gotCookie = String(req.headers.cookie || '');
+      if (postCount === 1) {
+        assert.equal(gotCsrf, 'csrf_v1');
+        assert.match(gotCookie, /ag_sess=session_1/, 'Must forward Set-Cookie from GET / on POST RPC');
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end('{"code":"unauthenticated"}');
+        return;
+      }
+      assert.equal(gotCsrf, 'csrf_v2', 'Must retry with freshly refreshed CSRF after 401');
+      assert.match(gotCookie, /ag_sess=session_2/, 'Must update forwarded Cookie on retry');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, userStatus: { email: 'test@example.com' } }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = server.address().port;
+    const client = await localApi.connect({ origin: `http://127.0.0.1:${port}`, fallbackDiscover: false });
+    const data = await client.call('GetUserStatus', {});
+    assert.equal(data.ok, true);
+    assert.equal(getCount, 2, 'Should refresh GET / once after 401');
+    assert.equal(postCount, 2, 'Should retry POST once after 401');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+
+  // 13b. Renderer: in-flight route switch MUST NOT deadlock requestBusy/scanBusy, stale CSRF 403 auto-recovers,
+  //      and stale multi-window quota + backend auth error MUST recover via same-origin direct RPC
+  const built = buildRenderer({ rootDir });
+  const coreCode = fs.readFileSync(path.join(rootDir, 'meter-core.js'), 'utf8');
+  const rendererCode = fs.readFileSync(built.targetFile, 'utf8');
+
+  class MiniClassList {
+    constructor() { this.set = new Set(); }
+    add(...names) { names.forEach(n => this.set.add(n)); }
+    remove(...names) { names.forEach(n => this.set.delete(n)); }
+    toggle(name, force) {
+      if (force === undefined) {
+        if (this.set.has(name)) { this.set.delete(name); return false; }
+        this.set.add(name); return true;
+      }
+      if (force) this.set.add(name); else this.set.delete(name);
+      return Boolean(force);
+    }
+    contains(name) { return this.set.has(name); }
+  }
+  class MiniEl {
+    constructor(tag = 'div', id = '') {
+      this.tagName = String(tag).toUpperCase();
+      this.id = id;
+      this.dataset = {};
+      this.style = { setProperty() {} };
+      this.classList = new MiniClassList();
+      this.children = [];
+      this.attributes = new Map();
+      this.textContent = '';
+      this.hidden = false;
+      this.shadowRoot = null;
+    }
+    setAttribute(k, v) { this.attributes.set(k, String(v)); if (k === 'id') this.id = String(v); }
+    getAttribute(k) { return this.attributes.has(k) ? this.attributes.get(k) : null; }
+    appendChild(c) { this.children.push(c); return c; }
+    remove() {}
+    querySelector() { return null; }
+    querySelectorAll() { return []; }
+    addEventListener() {}
+    removeEventListener() {}
+    attachShadow() {
+      const nodesById = new Map();
+      const sr = {
+        activeElement: null,
+        set innerHTML(html) {
+          this._html = String(html || '');
+          const re = /id=["']([^"']+)["']/g;
+          let m;
+          while ((m = re.exec(this._html)) !== null) {
+            if (!nodesById.has(m[1])) nodesById.set(m[1], new MiniEl('div', m[1]));
+          }
+        },
+        get innerHTML() { return this._html || ''; },
+        getElementById: (id) => nodesById.get(id) || null,
+        querySelector: () => null,
+        querySelectorAll: () => []
+      };
+      this.shadowRoot = sr;
+      return sr;
+    }
+    getBoundingClientRect() { return { left: 10, top: 10, width: 100, height: 30, right: 110, bottom: 40 }; }
+  }
+
+  const routeA = '11111111-1111-1111-1111-111111111111';
+  const routeB = '22222222-2222-2222-2222-222222222222';
+  let releaseRouteAFetch = null;
+  let releaseRouteAScan = null;
+  let routeBScanCalls = 0;
+  let quotaFailBackend = false;
+
+  const bodyEl = new MiniEl('body');
+  const locObj = {
+    protocol: 'https:', hostname: '127.0.0.1', origin: 'https://127.0.0.1:43210',
+    href: `https://127.0.0.1:43210/c/${routeA}`,
+    pathname: `/c/${routeA}`
+  };
+  const sb = {
+    console, setTimeout, clearTimeout, setInterval, clearInterval, URL, URLSearchParams, TextDecoder, TextEncoder, AbortController,
+    innerWidth: 1280, innerHeight: 800, devicePixelRatio: 2,
+    location: locObj,
+    localStorage: { getItem: () => null, setItem: () => {} },
+    getComputedStyle: () => ({ getPropertyValue: () => '#38bdf8' }),
+    __APP_CONFIG__: { csrfToken: 'expired-csrf' },
+    fetch: async (url, init) => {
+      const u = String(url);
+      if (u === '/') {
+        return { ok: true, status: 200, text: async () => '<script>window.__APP_CONFIG__ = {"csrfToken": "fresh-csrf-ok"}</script>' };
+      }
+      const hdrCsrf = init?.headers?.['x-codeium-csrf-token'];
+      if (hdrCsrf === 'expired-csrf') {
+        return { ok: false, status: 403, json: async () => ({ error: 'forbidden' }) };
+      }
+      if (u.includes('GetCascadeTrajectoryGeneratorMetadata')) {
+        const bodyObj = JSON.parse(init?.body || '{}');
+        if (bodyObj.cascadeId === routeA) {
+          await new Promise(resolve => { releaseRouteAFetch = resolve; });
+          return { ok: true, status: 200, json: async () => ({ generatorMetadata: [] }) };
+        }
+        if (bodyObj.cascadeId === routeB) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              generatorMetadata: [{
+                stepIndices: [1],
+                chatModel: {
+                  model: 'MODEL_GEMINI_3_1_PRO',
+                  usage: { inputTokens: 15000, cacheReadTokens: 35000, outputTokens: 1200 },
+                  chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+                }
+              }]
+            })
+          };
+        }
+      }
+      if (u.includes('RetrieveUserQuotaSummary')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            groups: [{
+              groupId: 'gemini_main',
+              displayName: 'Gemini Models',
+              buckets: [
+                { bucketId: '5h', remainingFraction: 0.95, resetTime: new Date(Date.now() + 4 * 3600000).toISOString() },
+                { bucketId: 'weekly', remainingFraction: 0.99, resetTime: new Date(Date.now() + 6 * 86400000).toISOString() }
+              ]
+            }]
+          })
+        };
+      }
+      if (u.includes('GetUserStatus')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            userStatus: {
+              cascadeModelConfigData: {
+                clientModelConfigs: [{
+                  modelOrAlias: { model: 'MODEL_GEMINI_3_1_PRO' },
+                  label: 'Gemini 3.1 Pro',
+                  quotaInfo: { remainingFraction: 0.95, resetTime: new Date(Date.now() + 4 * 3600000).toISOString() }
+                }]
+              }
+            }
+          })
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+    contextMeterAPI: {
+      getSettings: async () => ({ ok: true, uiPreferences: {}, contextPreferences: {} }),
+      saveSettings: async () => ({ ok: true }),
+      getQuota: async () => {
+        if (quotaFailBackend) {
+          return { ok: true, data: { ok: false, error: '本地鉴权失败或已失效', errorKind: 'auth' } };
+        }
+        return {
+          ok: true,
+          data: {
+            ok: true,
+            snapshot: {
+              pools: [{
+                key: 'shared_gemini_main',
+                label: 'Gemini Models',
+                sourceType: 'quota_summary_and_configs',
+                remainingFraction: 0.9,
+                buckets: [
+                  { windowKey: '5h', remainingFraction: 0.9, resetAtMs: Date.now() - 60000 },
+                  { windowKey: 'weekly', remainingFraction: 0.98, resetAtMs: Date.now() + 5 * 86400000 }
+                ]
+              }]
+            }
+          }
+        };
+      },
+      getTokenHistory: async () => ({ ok: true, data: { daily: {}, speedRecords: [] } }),
+      getContextUnlockStatus: async () => ({ ok: true, data: { status: 'unsupported', isPlatformSupported: false } }),
+      getEnhanceStatus: async () => ({ ok: true, data: { summary: { promptTier: 0, chineseTitleEnabled: false } } }),
+      getModulesStatus: async () => ({ ok: true, data: { modules: {} } }),
+      getRuntimeInfo: async () => ({ ok: true, backendSource: 'electron-ipc', backendVersion: '0.10.0' }),
+      scan: async (id) => {
+        if (id === routeA) {
+          await new Promise(resolve => { releaseRouteAScan = resolve; });
+          return { ok: true, data: { session: { files: [] } } };
+        }
+        if (id === routeB) {
+          routeBScanCalls += 1;
+          return { ok: true, data: { session: { files: [], steps: 3 } } };
+        }
+        return { ok: true, data: { session: { files: [] } } };
+      }
+    },
+    document: {
+      hidden: false,
+      activeElement: null,
+      body: bodyEl,
+      documentElement: bodyEl,
+      createElement: (t) => new MiniEl(t),
+      getElementById: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener() {},
+      removeEventListener() {}
+    },
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  sb.window = sb;
+  sb.globalThis = sb;
+  vm.createContext(sb);
+  vm.runInContext(coreCode, sb, { filename: 'meter-core.js' });
+  vm.runInContext(rendererCode, sb, { filename: 'meter-renderer.js' });
+  await new Promise(r => setTimeout(r, 40));
+  const api = sb.__AGContextMeter;
+
+  try {
+    // Tick on Route A starts in-flight pollTrajectory + runSessionScan (both stay hung)
+    api.tickForTest();
+    await new Promise(r => setTimeout(r, 40));
+
+    // Switch to Route B WHILE Route A's poll & scan are still hung!
+    locObj.pathname = `/c/${routeB}`;
+    locObj.href = `https://127.0.0.1:43210/c/${routeB}`;
+    api.tickForTest();
+    // Release old Route A hung promises AFTER switching
+    if (releaseRouteAFetch) releaseRouteAFetch();
+    if (releaseRouteAScan) releaseRouteAScan();
+    await new Promise(r => setTimeout(r, 60));
+
+    // Route B MUST have recovered from expired CSRF via GET / AND NOT deadlocked on requestBusy/scanBusy!
+    const snap = api.snapshot();
+    assert.equal(snap.route, routeB);
+    assert.ok(Number(snap.latest?.used || 0) >= 50000, 'Route B must populate context tokens after in-flight route switch + 403 CSRF refresh');
+    assert.ok(routeBScanCalls >= 1, 'Route B scan must run without being permanently blocked by stale Route A scanBusy');
+
+    // Now simulate backend quota failing with '本地鉴权失败或已失效' while stale multi-window snapshot exists
+    quotaFailBackend = true;
+    await api.syncQuotaFromHostForTest(true);
+    const qState = api.getModelQuotaStateForTest();
+    assert.equal(qState.error, '', 'Stale multi-window quota + backend auth error must self-heal via same-origin direct RPC');
+    assert.ok(qState.pools.length >= 1, 'Healed quota pools must be populated');
+  } finally {
+    if (releaseRouteAFetch) releaseRouteAFetch();
+    if (releaseRouteAScan) releaseRouteAScan();
     api.dispose();
   }
 });
