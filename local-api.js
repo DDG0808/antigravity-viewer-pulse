@@ -715,13 +715,19 @@ async function request(url, body, token, cookieMap = null) {
   return res.text;
 }
 
-async function connectOrigin(rawOrigin, page = null, origins = null) {
+async function connectOrigin(rawOrigin, page = null, origins = null, authOpts = {}) {
   const origin = normalizeLoopbackOrigin(rawOrigin);
   if (!origin) {
     throw new Error('非法的本机回环页面地址');
   }
   const cookieMap = new Map();
-  let token = '';
+  if (authOpts && typeof authOpts.cookieHeader === 'string' && authOpts.cookieHeader.trim()) {
+    mergeSetCookies(cookieMap, authOpts.cookieHeader.split(';').map(s => s.trim()).filter(Boolean));
+  }
+  const seededCsrf = (authOpts && typeof authOpts.csrfToken === 'string' && authOpts.csrfToken.trim() && !/[\r\n]/.test(authOpts.csrfToken))
+    ? authOpts.csrfToken.trim()
+    : '';
+  let token = seededCsrf;
 
   const refreshAuth = async () => {
     const html = await request(origin + '/', null, null, cookieMap);
@@ -733,7 +739,9 @@ async function connectOrigin(rawOrigin, page = null, origins = null) {
     return token;
   };
 
-  await refreshAuth();
+  if (!token) {
+    await refreshAuth();
+  }
 
   return {
     origin,
@@ -760,9 +768,13 @@ async function connectOrigin(rawOrigin, page = null, origins = null) {
 
 async function connect(options = {}) {
   const explicitOrigin = normalizeLoopbackOrigin(options?.origin);
+  const authOpts = {
+    cookieHeader: typeof options?.cookieHeader === 'string' ? options.cookieHeader : '',
+    csrfToken: typeof options?.csrfToken === 'string' ? options.csrfToken : ''
+  };
   if (explicitOrigin) {
     try {
-      return await connectOrigin(explicitOrigin, null, [explicitOrigin]);
+      return await connectOrigin(explicitOrigin, null, [explicitOrigin], authOpts);
     } catch (explicitErr) {
       // 当原窗口 origin 因语言服务重启或端口变更失效时，自动回退通过 CDP 发现最新活跃 Hub origin
       if (options?.fallbackDiscover !== false) {
@@ -778,7 +790,7 @@ async function connect(options = {}) {
               const origins = Array.from(new Set(
                 discovery.matchedTargets.map(item => normalizeLoopbackOrigin(item.url)).filter(Boolean)
               ));
-              return await connectOrigin(nextOrigin, hubTarget, origins);
+              return await connectOrigin(nextOrigin, hubTarget, origins, authOpts);
             }
           }
         } catch {}
@@ -798,7 +810,7 @@ async function connect(options = {}) {
   const origins = Array.from(new Set(
     discovery.matchedTargets.map(item => normalizeLoopbackOrigin(item.url)).filter(Boolean)
   ));
-  return connectOrigin(targetOrigin, hubTarget, origins);
+  return connectOrigin(targetOrigin, hubTarget, origins, authOpts);
 }
 
 module.exports = {

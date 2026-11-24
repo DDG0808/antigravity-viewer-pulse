@@ -17,8 +17,8 @@ const { getStateDir } = require('./asar-engine');
 const { safeWriteJsonSync } = require('./meter-storage');
 const { parseAndValidateProxyUrl } = require('./meter-proxy');
 
-const SCHEMA_VERSION = "0.10.0";
-const FALLBACK_PROJECT_VERSION = "0.10.0";
+const SCHEMA_VERSION = "0.10.1";
+const FALLBACK_PROJECT_VERSION = "0.10.1";
 
 function resolveProjectVersion() {
   for (const pkgPath of [

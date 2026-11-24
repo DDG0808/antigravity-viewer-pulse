@@ -5,7 +5,7 @@ setlocal DisableDelayedExpansion
 cd /d "%~dp0"
 
 echo ========================================================
-echo   Antigravity Viewer Pulse v0.10.0 - 一键安装向导 (Windows)
+echo   Antigravity Viewer Pulse v0.10.1 - 一键安装向导 (Windows)
 echo ========================================================
 echo.
 

@@ -1,6 +1,6 @@
 {
   "name": "antigravity-pulse",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Antigravity Pulse — Spatial Bento HUD plugin for Antigravity Desktop: Concentric Dual-Ring Dynamic Island, real-time context & streaming tok/s telemetry, shared quota pools, magnetic context budget slider, 42-region multi-currency API cost ledger, binary 1M unlock, Lv.0-Lv.4 prompt enhancer, No-TUN proxy & shell localization.",
   "main": "cli.js",
   "bin": {

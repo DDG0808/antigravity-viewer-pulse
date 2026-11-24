@@ -14,8 +14,8 @@ const { PROJECT_VERSION } = require('./modules-config');
 
 test('1. Build pipeline generates valid meter-renderer.js with zero native ugly form controls', () => {
   const res = buildRenderer({ rootDir });
-  assert.equal(res.version, '0.10.0');
-  assert.equal(PROJECT_VERSION, '0.10.0');
+  assert.equal(res.version, '0.10.1');
+  assert.equal(PROJECT_VERSION, '0.10.1');
   assert.ok(fs.existsSync(res.targetFile), 'meter-renderer.js should exist');
   assert.ok(res.bytes > 40000, 'meter-renderer.js should contain complete bundled styles, template & logic');
 
@@ -591,55 +591,55 @@ test('4. Online update system (DDG0808/antigravity-viewer-pulse), ZIP integrity 
   const repoBase = 'https://github.com/DDG0808/antigravity-viewer-pulse';
   assert.deepEqual(core.parseSemver('v0.9.0'), { major: 0, minor: 9, patch: 0 });
   assert.deepEqual(core.parseSemver('v1.2.3'), { major: 1, minor: 2, patch: 3 });
-  assert.equal(core.compareVersions('0.10.0', '0.9.1'), 1);
+  assert.equal(core.compareVersions('0.10.1', '0.10.0'), 1);
   assert.equal(core.compareVersions('1.0.0', '0.9.9'), 1);
   assert.equal(core.compareVersions('0.9.0', '0.9.0'), 0);
 
   const mockReleases = [
     {
-      tag_name: 'v0.9.1',
-      draft: false,
-      prerelease: false,
-      html_url: `${repoBase}/releases/tag/v0.9.1`,
-      body: 'Previous release',
-      assets: []
-    },
-    {
       tag_name: 'v0.10.0',
       draft: false,
       prerelease: false,
       html_url: `${repoBase}/releases/tag/v0.10.0`,
-      body: '### Release v0.10.0',
+      body: 'Previous release',
+      assets: []
+    },
+    {
+      tag_name: 'v0.10.1',
+      draft: false,
+      prerelease: false,
+      html_url: `${repoBase}/releases/tag/v0.10.1`,
+      body: '### Release v0.10.1',
       assets: [
-        { name: 'antigravity-viewer-pulse_0.10.0_darwin_arm64.zip', browser_download_url: `${repoBase}/releases/download/v0.10.0/antigravity-viewer-pulse_0.10.0_darwin_arm64.zip` },
-        { name: 'antigravity-viewer-pulse_0.10.0_windows_amd64.zip', browser_download_url: `${repoBase}/releases/download/v0.10.0/antigravity-viewer-pulse_0.10.0_windows_amd64.zip` },
-        { name: 'checksums.txt', browser_download_url: `${repoBase}/releases/download/v0.10.0/checksums.txt` }
+        { name: 'antigravity-viewer-pulse_0.10.1_darwin_arm64.zip', browser_download_url: `${repoBase}/releases/download/v0.10.1/antigravity-viewer-pulse_0.10.1_darwin_arm64.zip` },
+        { name: 'antigravity-viewer-pulse_0.10.1_windows_amd64.zip', browser_download_url: `${repoBase}/releases/download/v0.10.1/antigravity-viewer-pulse_0.10.1_windows_amd64.zip` },
+        { name: 'checksums.txt', browser_download_url: `${repoBase}/releases/download/v0.10.1/checksums.txt` }
       ]
     }
   ];
 
-  const filtered = core.filterReleases(mockReleases, '0.9.1');
+  const filtered = core.filterReleases(mockReleases, '0.10.0');
   assert.equal(filtered.length, 1);
-  assert.equal(filtered[0].version, '0.10.0');
+  assert.equal(filtered[0].version, '0.10.1');
 
   const matchedDarwin = core.findReleaseAsset(filtered[0].assets, 'darwin', 'arm64');
-  assert.equal(matchedDarwin.packageAsset?.name, 'antigravity-viewer-pulse_0.10.0_darwin_arm64.zip');
+  assert.equal(matchedDarwin.packageAsset?.name, 'antigravity-viewer-pulse_0.10.1_darwin_arm64.zip');
   assert.equal(matchedDarwin.checksumAsset?.name, 'checksums.txt');
 
   const matchedWin = core.findReleaseAsset(filtered[0].assets, 'win32', 'x64');
-  assert.equal(matchedWin.packageAsset?.name, 'antigravity-viewer-pulse_0.10.0_windows_amd64.zip');
+  assert.equal(matchedWin.packageAsset?.name, 'antigravity-viewer-pulse_0.10.1_windows_amd64.zip');
 
   assert.equal(core.isValidExternalUrl(repoBase), true);
   assert.equal(core.isValidExternalUrl(`${repoBase}/releases/tag/v0.9.0`), true);
 
   const manifestInfo = validateManifest();
-  assert.equal(manifestInfo.version, '0.10.0');
+  assert.equal(manifestInfo.version, '0.10.1');
   assert.ok(manifestInfo.liveRuntimeFiles.includes('scripts/macos-setup.js'));
   assert.ok(manifestInfo.liveRuntimeFiles.includes('meter-renderer.js'));
 
   const tmpZipDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pulse-zip-test-'));
   try {
-    const testZipPath = path.join(tmpZipDir, 'antigravity-viewer-pulse_0.10.0_darwin_arm64.zip');
+    const testZipPath = path.join(tmpZipDir, 'antigravity-viewer-pulse_0.10.1_darwin_arm64.zip');
     createZipArchive(testZipPath, [
       { src: path.join(rootDir, 'package.json'), arc: 'package.json' },
       { src: path.join(rootDir, 'install.sh'), arc: 'install.sh' }
@@ -649,8 +649,8 @@ test('4. Online update system (DDG0808/antigravity-viewer-pulse), ZIP integrity 
       execFileSync('unzip', ['-t', testZipPath], { stdio: 'pipe' });
     }
     const zipHash = crypto.createHash('sha256').update(fs.readFileSync(testZipPath)).digest('hex');
-    const checksumLine = `${zipHash}  antigravity-viewer-pulse_0.10.0_darwin_arm64.zip`;
-    assert.match(checksumLine, /^[0-9a-f]{64}\s+antigravity-viewer-pulse_0\.10\.0_darwin_arm64\.zip$/);
+    const checksumLine = `${zipHash}  antigravity-viewer-pulse_0.10.1_darwin_arm64.zip`;
+    assert.match(checksumLine, /^[0-9a-f]{64}\s+antigravity-viewer-pulse_0\.10\.1_darwin_arm64\.zip$/);
   } finally {
     fs.rmSync(tmpZipDir, { recursive: true, force: true });
   }
@@ -1821,7 +1821,7 @@ test('12. v0.10.0 HUD Ledger CSV/JSON export, model cost ranking, Audit compacti
 
     const jsonExp = api.buildLedgerExportForTest('json');
     const parsedJson = JSON.parse(jsonExp.content);
-    assert.equal(parsedJson.version, '0.10.0');
+    assert.equal(parsedJson.version, '0.10.1');
     assert.equal(parsedJson.daily.length, 2);
     assert.equal(parsedJson.modelBreakdown.length, 2);
     assert.equal(parsedJson.modelBreakdown[0].modelKey, 'claude-opus-5-5', 'Model ranking must sort by costUSD descending');
@@ -1850,12 +1850,12 @@ test('12. v0.10.0 HUD Ledger CSV/JSON export, model cost ranking, Audit compacti
 
     // 12c. Privacy-safe Markdown Telemetry Snapshot & Clipboard copy
     const mdSnap = api.buildTelemetrySnapshotForTest();
-    assert.match(mdSnap, /Antigravity Pulse v0\.10\.0/);
+    assert.match(mdSnap, /Antigravity Pulse v0\.10\.1/);
     assert.match(mdSnap, /自动压缩 1 次/);
     assert.doesNotMatch(mdSnap, /aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/, 'Markdown snapshot must not expose conversation ID');
     sr.getElementById('btnCopySnapshot')?.click();
     await new Promise(r => setTimeout(r, 20));
-    assert.match(copiedClipboardText, /Antigravity Pulse v0\.10\.0/, 'Clicking copy snapshot must write Markdown to clipboard');
+    assert.match(copiedClipboardText, /Antigravity Pulse v0\.10\.1/, 'Clicking copy snapshot must write Markdown to clipboard');
 
     // 12d. Alt+Shift+P global HUD toggle shortcut (and ignoring inside INPUT)
     const keyHandlers = docListeners.get('keydown') || [];
@@ -2183,6 +2183,272 @@ test('13. Long-running self-healing: route-switch requestBusy/scanBusy deadlock 
   } finally {
     if (releaseRouteAFetch) releaseRouteAFetch();
     if (releaseRouteAScan) releaseRouteAScan();
+    api.dispose();
+  }
+});
+
+test('14. v0.10.1 Issue #1 regression: Gemini 4 Neon pricing/pool, seeded Electron Cookie+CSRF & auto-refreshing Speed Duel / Ledger API valuation', async () => {
+  const http = require('node:http');
+  const core = require('./meter-core');
+  const localApi = require('./local-api');
+
+  // 14a. Gemini 4 Neon & Orchestrator (Neon) pricing ($3.00 / $0.15 / $15.00 per 1M) + unified Gemini Models quota group match
+  const neonCost = core.calculateRequestApiCost({
+    model: 'Gemini 4 Neon Extra High',
+    inputTokens: 100000,
+    cacheReadTokens: 200000,
+    outputTokens: 10000
+  });
+  assert.equal(neonCost.isPriced, true, 'Gemini 4 Neon must be recognized as a priced model');
+  assert.equal(neonCost.modelKey, 'gemini-4-neon');
+  // 0.1M * $3.00 ($0.30) + 0.2M * $0.15 ($0.03) + 0.01M * $15.00 ($0.15) = $0.48
+  assert.equal(neonCost.costUSD, 0.48);
+
+  const orchNeonCost = core.calculateRequestApiCost({
+    model: 'Orchestrator (Neon)',
+    inputTokens: 50000,
+    cacheReadTokens: 0,
+    outputTokens: 10000
+  });
+  assert.equal(orchNeonCost.isPriced, true);
+  assert.equal(orchNeonCost.modelKey, 'gemini-4-neon', 'Orchestrator (Neon) must map to gemini-4-neon rather than argon');
+
+  const neonQuotaSnap = core.buildModelQuotaSnapshot({
+    cascadeModelConfigs: [{
+      modelId: 'MODEL_GEMINI_4_NEON_XHIGH',
+      label: 'Gemini 4 Neon (Extra High)',
+      quotaInfo: { remainingFraction: 0.88 }
+    }],
+    quotaSummaryRes: {
+      groups: [{
+        groupId: 'gemini_models',
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: '5h', remainingFraction: 0.88, resetTime: new Date(Date.now() + 3600000).toISOString() },
+          { bucketId: 'weekly', remainingFraction: 0.96, resetTime: new Date(Date.now() + 5 * 86400000).toISOString() }
+        ]
+      }]
+    }
+  });
+  assert.equal(neonQuotaSnap.pools.length, 1);
+  assert.equal(neonQuotaSnap.pools[0].buckets.length, 2, 'Gemini 4 Neon must bind to unified Gemini Models 5h+weekly buckets');
+
+  // 14b. Seeded Electron session Cookie + CSRF token allows local-api to authenticate even when unauthenticated GET / returns 403
+  const strictServer = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/') {
+      res.writeHead(403);
+      res.end('Forbidden without browser session');
+      return;
+    }
+    if (req.method === 'POST' && req.url.includes('GetUserStatus')) {
+      assert.equal(req.headers['x-codeium-csrf-token'], 'seeded-csrf-token');
+      assert.match(String(req.headers.cookie || ''), /electron_auth=valid_cookie/);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise(resolve => strictServer.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = strictServer.address().port;
+    const apiConn = await localApi.connect({
+      origin: `http://127.0.0.1:${port}`,
+      cookieHeader: 'electron_auth=valid_cookie',
+      csrfToken: 'seeded-csrf-token',
+      fallbackDiscover: false
+    });
+    const out = await apiConn.call('GetUserStatus', {});
+    assert.equal(out.ok, true, 'Seeded Electron session cookie + CSRF must succeed without hitting unauthenticated GET /');
+  } finally {
+    await new Promise(resolve => strictServer.close(resolve));
+  }
+
+  // 14c. Live Speed Duel sample retention across conversation switches + automatic Ledger API valuation sync after recordCalls
+  const built = buildRenderer({ rootDir });
+  const coreCode = fs.readFileSync(path.join(rootDir, 'meter-core.js'), 'utf8');
+  const rendererCode = fs.readFileSync(built.targetFile, 'utf8');
+
+  class MiniClassList {
+    constructor() { this.set = new Set(); }
+    add(...names) { names.forEach(n => this.set.add(n)); }
+    remove(...names) { names.forEach(n => this.set.delete(n)); }
+    toggle(name, force) {
+      if (force === undefined) {
+        if (this.set.has(name)) { this.set.delete(name); return false; }
+        this.set.add(name); return true;
+      }
+      if (force) this.set.add(name); else this.set.delete(name);
+      return Boolean(force);
+    }
+    contains(name) { return this.set.has(name); }
+  }
+  class MiniEl {
+    constructor(tag = 'div', id = '') {
+      this.tagName = String(tag).toUpperCase();
+      this.id = id;
+      this.dataset = {};
+      this.style = { setProperty() {} };
+      this.classList = new MiniClassList();
+      this.children = [];
+      this.attributes = new Map();
+      this.textContent = '';
+      this.innerHTML = '';
+      this.hidden = false;
+      this.shadowRoot = null;
+    }
+    setAttribute(k, v) { this.attributes.set(k, String(v)); if (k === 'id') this.id = String(v); }
+    getAttribute(k) { return this.attributes.has(k) ? this.attributes.get(k) : null; }
+    appendChild(c) { this.children.push(c); return c; }
+    remove() {}
+    querySelector() { return null; }
+    querySelectorAll() { return []; }
+    addEventListener() {}
+    removeEventListener() {}
+    attachShadow() {
+      const nodesById = new Map();
+      const sr = {
+        activeElement: null,
+        set innerHTML(html) {
+          this._html = String(html || '');
+          const re = /id=["']([^"']+)["']/g;
+          let m;
+          while ((m = re.exec(this._html)) !== null) {
+            if (!nodesById.has(m[1])) nodesById.set(m[1], new MiniEl('div', m[1]));
+          }
+        },
+        get innerHTML() { return this._html || ''; },
+        getElementById: (id) => nodesById.get(id) || null,
+        querySelector: () => null,
+        querySelectorAll: () => []
+      };
+      this.shadowRoot = sr;
+      return sr;
+    }
+    getBoundingClientRect() { return { left: 10, top: 10, width: 100, height: 30, right: 110, bottom: 40 }; }
+  }
+
+  const conv1 = '33333333-3333-3333-3333-333333333333';
+  const conv2 = '44444444-4444-4444-4444-444444444444';
+  const persistedCalls = [];
+  let tokenHistoryCalls = 0;
+  const loc = {
+    protocol: 'https:', hostname: '127.0.0.1', origin: 'https://127.0.0.1:43210',
+    href: `https://127.0.0.1:43210/c/${conv1}`,
+    pathname: `/c/${conv1}`
+  };
+  const bodyEl = new MiniEl('body');
+  const sb = {
+    console, setTimeout, clearTimeout, setInterval, clearInterval, URL, URLSearchParams, TextDecoder, TextEncoder, AbortController,
+    innerWidth: 1280, innerHeight: 800, devicePixelRatio: 2,
+    location: loc,
+    localStorage: { getItem: () => null, setItem: () => {} },
+    getComputedStyle: () => ({ getPropertyValue: () => '#38bdf8' }),
+    __APP_CONFIG__: { csrfToken: 'csrf-v0101' },
+    fetch: async (url, init) => {
+      if (String(url).includes('GetCascadeTrajectoryGeneratorMetadata')) {
+        const b = JSON.parse(init?.body || '{}');
+        if (b.cascadeId === conv1) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              generatorMetadata: [{
+                stepIndices: [1],
+                done: true,
+                chatModel: {
+                  modelDisplayName: 'Gemini 4 Neon Extra High',
+                  model: 'gemini-4-neon',
+                  timeToFirstToken: { seconds: 1, nanos: 0 },
+                  streamingDuration: { seconds: 3, nanos: 0 },
+                  usage: { inputTokens: 100000, cacheReadTokens: 200000, outputTokens: 10000 },
+                  chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+                }
+              }]
+            })
+          };
+        }
+        return { ok: true, status: 200, json: async () => ({ generatorMetadata: [] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+    contextMeterAPI: {
+      getSettings: async () => ({ ok: true, uiPreferences: {}, contextPreferences: {} }),
+      saveSettings: async () => ({ ok: true }),
+      getQuota: async () => ({ ok: true, data: { snapshot: { pools: [] } } }),
+      recordCalls: async (calls) => {
+        persistedCalls.push(...calls);
+        return { ok: true, changed: true };
+      },
+      getTokenHistory: async () => {
+        tokenHistoryCalls += 1;
+        const costSum = persistedCalls.reduce((s, c) => s + Number(c.costUSD || 0), 0);
+        const tokSum = persistedCalls.reduce((s, c) => s + Number(c.totalTokens || 0), 0);
+        return {
+          ok: true,
+          data: {
+            daily: {
+              '2026-11-24': { inputTokens: 50000, cacheTokens: 0, outputTokens: 5000, totalTokens: 55000, costUSD: 1.00 },
+              ...(tokSum > 0 ? { '2026-11-25': { inputTokens: 100000, cacheTokens: 200000, outputTokens: 10000, totalTokens: tokSum, costUSD: costSum } } : {})
+            },
+            costEstimateBySource: {
+              all: {
+                pricedCostUSD: Number((1.00 + costSum).toFixed(4)),
+                byModel: {
+                  'claude-opus-5-5': { requests: 1, costUSD: 1.00, tokens: 55000 },
+                  ...(tokSum > 0 ? { 'gemini-4-neon': { requests: persistedCalls.length, costUSD: costSum, tokens: tokSum } } : {})
+                }
+              }
+            },
+            speedRecords: persistedCalls
+          }
+        };
+      },
+      getContextUnlockStatus: async () => ({ ok: true, data: { status: 'unsupported', isPlatformSupported: false } }),
+      getEnhanceStatus: async () => ({ ok: true, data: { summary: { promptTier: 0, chineseTitleEnabled: false } } }),
+      getModulesStatus: async () => ({ ok: true, data: { modules: {} } }),
+      getRuntimeInfo: async () => ({ ok: true, backendSource: 'electron-ipc', backendVersion: '0.10.1' }),
+      scan: async () => ({ ok: true, data: { session: { files: [] } } })
+    },
+    document: {
+      hidden: false,
+      activeElement: null,
+      body: bodyEl,
+      documentElement: bodyEl,
+      createElement: (t) => new MiniEl(t),
+      getElementById: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener() {},
+      removeEventListener() {}
+    },
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  sb.window = sb;
+  sb.globalThis = sb;
+  vm.createContext(sb);
+  vm.runInContext(coreCode, sb, { filename: 'meter-core.js' });
+  vm.runInContext(rendererCode, sb, { filename: 'meter-renderer.js' });
+  await new Promise(r => setTimeout(r, 60));
+  const api = sb.__AGContextMeter;
+
+  try {
+    const sr = bodyEl.children.find(n => n.id === 'ag-context-meter').shadowRoot;
+    // Before conv1 turn completes (wait for debounced 350ms syncTokenHistory after recordCalls!)
+    await new Promise(r => setTimeout(r, 460));
+    assert.ok(tokenHistoryCalls >= 2, 'syncTokenHistory must auto-fire after recordCalls without manual refresh click');
+    assert.match(sr.getElementById('subSummaryLine')?.textContent || '', /\$1\.48/, 'Ledger API valuation must auto-update from $1.00 to $1.48 after Gemini 4 Neon turn');
+
+    // Switch to empty conv2 (which clears state.sessionCalls!) and open Speed Duel sheet
+    loc.pathname = `/c/${conv2}`;
+    loc.href = `https://127.0.0.1:43210/c/${conv2}`;
+    api.tickForTest();
+    api.openSheetForTest('speedSheet');
+    assert.ok(api.getSpeedRecordsCountForTest() >= 1, 'Speed records from conv1 must persist across conversation switch');
+    assert.match(sr.getElementById('duelBarsBox')?.innerHTML || '', /Neon/i, 'Speed Duel must render Gemini 4 Neon bar even after switching to empty conv2');
+  } finally {
     api.dispose();
   }
 });

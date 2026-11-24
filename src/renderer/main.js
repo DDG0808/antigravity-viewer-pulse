@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const METER_VERSION = '0.10.0';
+  const METER_VERSION = '0.10.1';
   const LOOPBACK_HOST = [127, 0, 0, 1].join('.');
 
   // 仅允许在本地回环页面、受控桌面协议或无 location 测试沙箱中挂载，阻止第三方外部页面加载 HUD
@@ -136,6 +136,8 @@
 
     // Token Ledger & Subscription FX
     historyData: null,
+    historyFetchedAt: 0,
+    historySyncBusy: false,
     ledgerSource: 'all',
     heatMode: 'daily',
     hmPageOffset: 0,
@@ -186,6 +188,7 @@
   const intervals = new Set();
   let toastTimer = null;
   let autoUpdateTimer = null;
+  let historyRefreshTimer = null;
 
   function notify(msg) {
     const tEl = el('hudToast');
@@ -1402,6 +1405,35 @@
   }
 
   // ==================== Real-Time Poll, Speed Telemetry & Quota ====================
+  function mergeIntoSpeedRecords(incoming, replaceOldestBase = false) {
+    if (!Array.isArray(incoming) || !incoming.length) return;
+    const byId = new Map();
+    const firstList = replaceOldestBase ? incoming : state.speedRecords;
+    const secondList = replaceOldestBase
+      ? state.speedRecords.filter(r => r && r.callId && (Date.now() - Number(r.timestamp || 0)) < 300000)
+      : incoming;
+    for (const r of firstList) {
+      if (r && r.callId) byId.set(r.callId, r);
+    }
+    for (const r of secondList) {
+      if (!r || !r.callId) continue;
+      const prev = byId.get(r.callId);
+      if (!prev || Number(r.outputTokens || 0) >= Number(prev.outputTokens || 0)) {
+        byId.set(r.callId, r);
+      }
+    }
+    const merged = Array.from(byId.values());
+    state.speedRecords = merged.length > 2500 ? merged.slice(-2500) : merged;
+  }
+
+  function scheduleHistoryRefresh(delayMs = 400) {
+    if (state.disposed) return;
+    clearTimeout(historyRefreshTimer);
+    historyRefreshTimer = setTimeout(() => {
+      if (!state.disposed) void syncTokenHistory(false);
+    }, delayMs);
+  }
+
   function mergeAllSpeedCalls() {
     const byId = new Map();
     for (const r of state.speedRecords) {
@@ -1573,7 +1605,10 @@
       state.lastRoundCost = lastPriced ? Number(lastPriced.costUSD) : 0;
 
       if (finalBatch.length > 0) {
+        // 即时将已完成轮次的测速样本合并至内存 speedRecords，即使随后立即切换会话也不会丢失测速决斗样本
+        mergeIntoSpeedRecords(finalBatch.map(item => item.call).filter(isValidCallSpeed), false);
         void (async () => {
+          let anyRecorded = false;
           for (let start = 0; start < finalBatch.length; start += 250) {
             const slice = finalBatch.slice(start, start + 250);
             const callsChunk = slice.map((item) => item.call);
@@ -1591,6 +1626,8 @@
                     state.pendingFinalCalls.delete(item.call.callId);
                   }
                 }
+              } else {
+                anyRecorded = true;
               }
             } catch {
               for (const item of slice) {
@@ -1599,6 +1636,10 @@
                 }
               }
             }
+          }
+          // 入账落盘完成后自动节流拉取最新聚合账本，使「账本 API 折算」与「测速决斗」无需手动点击刷新即可实时增长
+          if (anyRecorded && !state.disposed) {
+            scheduleHistoryRefresh(350);
           }
         })();
       }
@@ -1672,12 +1713,13 @@
     controllers.add(scanCtrl);
     let scanTid = null;
     try {
+      const liveCsrf = getActiveCsrfToken();
       const scanPromise = callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.scan === 'function'
           ? () => globalThis.contextMeterAPI.scan(id, force)
           : null,
         liveRoute: '/scan',
-        body: { id, force },
+        body: { id, force, ...(liveCsrf ? { csrfToken: liveCsrf } : {}) },
         signal: scanCtrl.signal
       });
       // 为 IPC/Live 归档扫描施加 35s 兜底超时，防止休眠唤醒导致挂起后 scanBusy 永久卡死
@@ -1897,13 +1939,19 @@
   async function syncQuotaFromHost(force = false) {
     if (state.disposed) return null;
     syncActiveModelIdentity();
+    const curCsrf = getActiveCsrfToken();
     try {
+      const quotaPayload = {
+        force: Boolean(force),
+        currentModel: state.activeModelId || state.activeModelLabel || null,
+        ...(curCsrf ? { csrfToken: curCsrf } : {})
+      };
       const res = await callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.getQuota === 'function'
-          ? () => globalThis.contextMeterAPI.getQuota({ force: Boolean(force) })
+          ? () => globalThis.contextMeterAPI.getQuota(quotaPayload)
           : null,
         liveRoute: '/quota',
-        body: { force: Boolean(force), currentModel: state.activeModelId || state.activeModelLabel || null }
+        body: quotaPayload
       });
       const payload = res?.data || res;
       if (payload) {
@@ -1976,6 +2024,8 @@
 
   async function syncTokenHistory(force = false) {
     if (state.disposed) return;
+    if (state.historySyncBusy && !force) return;
+    state.historySyncBusy = true;
     try {
       const res = await callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.getTokenHistory === 'function'
@@ -1984,9 +2034,11 @@
         liveRoute: '/token-history',
         body: { force }
       });
+      if (state.disposed) return;
       if (res?.ok && res.data) {
+        state.historyFetchedAt = Date.now();
         if (Array.isArray(res.data.speedRecords)) {
-          state.speedRecords = res.data.speedRecords;
+          mergeIntoSpeedRecords(res.data.speedRecords, true);
         }
         if (Array.isArray(res.data.cascadeModelConfigs) && res.data.cascadeModelConfigs.length > 0) {
           mergeCascadeConfigs(res.data.cascadeModelConfigs);
@@ -2007,7 +2059,9 @@
         renderBudgetSpace();
         if (state.openSheetId === 'speedSheet') renderSpeedSheet();
       }
-    } catch {}
+    } catch {} finally {
+      state.historySyncBusy = false;
+    }
   }
 
   async function syncStudioStatuses() {
@@ -2479,6 +2533,7 @@
     if (poolKey === 'shared_3p_pool' && s.length > 18) return 'Claude / 第三方池';
     if (poolKey === 'shared_gemini_argon' && s.length > 18) return 'Gemini Argon';
     if (poolKey === 'shared_gemini_carbon' && s.length > 18) return 'Gemini Carbon';
+    if (poolKey === 'shared_gemini_neon' && s.length > 18) return 'Gemini Neon';
     return s;
   }
 
@@ -3730,6 +3785,12 @@
   }
 
   // ==================== Interactive Event Bindings ====================
+  function maybeAutoRefreshHistory() {
+    if (!state.disposed && !state.historySyncBusy && (Date.now() - state.historyFetchedAt) > 12000) {
+      void syncTokenHistory(false);
+    }
+  }
+
   function toggleHud(open) {
     state.hudOpen = Boolean(open);
     syncHudAnchorPosition();
@@ -3738,6 +3799,7 @@
     el('glanceTip')?.classList.toggle('hidden-tip', state.hudOpen);
     if (state.hudOpen) {
       renderAll();
+      maybeAutoRefreshHistory();
     } else {
       state.openSheetId = null;
       qsa('.glass-sheet').forEach(s => s.classList.remove('open'));
@@ -3751,7 +3813,10 @@
     qsa('.rail-btn').forEach(b => b.classList.toggle('active', b.dataset.space === sp));
     qsa('.space-view').forEach(v => v.classList.toggle('active', v.id === `space-${sp}`));
     applyStaticTranslations();
-    if (sp === 'ledger') renderLedgerSpace();
+    if (sp === 'ledger') {
+      renderLedgerSpace();
+      maybeAutoRefreshHistory();
+    }
     if (sp === 'budget') renderBudgetSpace();
     if (sp === 'studio') renderStudioSpace();
   }
@@ -3760,7 +3825,10 @@
     qsa('.glass-sheet').forEach(s => s.classList.toggle('open', s.id === sheetId));
     state.openSheetId = sheetId;
     if (sheetId === 'auditSheet') renderAuditSheet();
-    if (sheetId === 'speedSheet') renderSpeedSheet();
+    if (sheetId === 'speedSheet') {
+      renderSpeedSheet();
+      maybeAutoRefreshHistory();
+    }
     if (sheetId === 'subSheet') renderSubscriptionSheet();
   }
 
@@ -4837,6 +4905,12 @@
       switchSpace(sp);
       return state.activeSpace;
     },
+    openSheetForTest: (sheetId) => {
+      toggleHud(true);
+      openSheet(sheetId);
+      return state.openSheetId;
+    },
+    getSpeedRecordsCountForTest: () => state.speedRecords.length,
     buildTelemetrySnapshotForTest: () => buildTelemetryMarkdownSnapshot(),
     buildTurnTimelineForTest: (calls) => buildSessionTurnTimeline(calls || state.sessionCalls),
     buildLedgerExportForTest: (fmt) => buildLedgerExportData(fmt),
@@ -4865,6 +4939,7 @@
       clearTimeout(toastTimer);
       clearTimeout(autoUpdateTimer);
       clearTimeout(subPriceSaveTimer);
+      clearTimeout(historyRefreshTimer);
       uninstallRequestInterceptor();
       document.removeEventListener?.('click', onDocClick, true);
       document.removeEventListener?.('keydown', onDocKeydown);

@@ -36,6 +36,9 @@
       : String(raw);
     const s = String(text || '').toLowerCase().trim();
     if (!s) return 'unknown';
+    if (s.includes('neon') || s.includes('gemini-4-neon')) {
+      return 'gemini-4-neon';
+    }
     if (s.includes('carbon') || s.includes('gemini-4-carbon') || s.includes('m670')) {
       return 'gemini-4-carbon';
     }
@@ -65,6 +68,7 @@
     if (pk === 'claude-opus-5-5' || pk === 'claude-sonnet-5-5' || pk === 'gpt-oss-120b') return 'shared_3p_pool';
     if (pk === 'gemini-4-argon') return 'shared_gemini_argon';
     if (pk === 'gemini-4-carbon') return 'shared_gemini_carbon';
+    if (pk === 'gemini-4-neon') return 'shared_gemini_neon';
     return pk && pk !== 'unknown' ? `shared_${pk}` : 'unknown';
   }
 
@@ -382,6 +386,7 @@
     const parsed = parseQuotaFraction(qi, { unavailable: avail.noPermission, schemaKind: 'codeium_quota_info' });
     const poolNames = {
       'gemini-4-argon': 'Gemini 4 Argon 配额池（周限额）',
+      'gemini-4-neon': 'Gemini 4 Neon 配额池',
       'gemini-4-hydrogen': 'Gemini 4 Hydrogen / 3.8 Flash 共享池',
       'gemini-3.8-flash': 'Gemini 3.8 Flash / Hydrogen 共享池',
       'gemini-4-carbon': 'Gemini 4 Carbon 配额池',
@@ -854,6 +859,13 @@
         cacheReadPerMillion: 0.075
       }
     ],
+    'gemini-4-neon': [
+      {
+        inputPerMillion: 3.00,
+        outputPerMillion: 15.00,
+        cacheReadPerMillion: 0.15
+      }
+    ],
     'gemini-4-carbon': [
       {
         effectiveTo: '2026-11-30',
@@ -944,6 +956,7 @@
     if (!raw || typeof raw !== 'string') return null;
     const str = raw.trim().toLowerCase();
     if (str.includes('3.8-flash') || str.includes('3.8 flash') || str.includes('flash-n')) return 'gemini-3.8-flash';
+    if (str.includes('4-neon') || str.includes('4 neon') || str.includes('neon')) return 'gemini-4-neon';
     if (str.includes('4-hydrogen') || str.includes('4 hydrogen') || str.includes('hydrogen')) return 'gemini-4-hydrogen';
     // 注：2.32.1 客户端已将 gemini-pro-orchestrator 明确归为 Orchestrator (Argon)，仅明确的 carbon / m670 归为 gemini-4-carbon；未知 orchestrator 后缀保持未计价
     if (str.includes('4-carbon') || str.includes('4 carbon') || str.includes('carbon') || str.includes('m670')) return 'gemini-4-carbon';
@@ -1476,10 +1489,12 @@
 
     const modelStr = String(extractModelString(req) || '').toLowerCase();
     const inRate = modelStr.includes('opus') ? 4.00
+      : modelStr.includes('neon') ? 3.00
       : (modelStr.includes('sonnet') || modelStr.includes('carbon') || modelStr.includes('argon')) ? 2.00
       : modelStr.includes('flash') ? 0.75
       : 1.50;
     const readRate = modelStr.includes('opus') ? 0.20
+      : modelStr.includes('neon') ? 0.15
       : (modelStr.includes('sonnet') || modelStr.includes('carbon') || modelStr.includes('argon')) ? 0.10
       : 0.075;
     const writeExtra = modelStr.includes('claude') || modelStr.includes('opus') || modelStr.includes('sonnet')
@@ -1988,6 +2003,7 @@
     const modelNameMap = {
       'gemini-3.8-flash': 'Gemini 3.8 Flash Standard',
       'gemini-4-hydrogen': 'Gemini 4 Hydrogen',
+      'gemini-4-neon': 'Gemini 4 Neon',
       'gemini-4-carbon': 'Gemini 4 Carbon',
       'gemini-4-argon': 'Gemini 4 Argon',
       'gemini-3.1-pro-preview': 'Gemini 3.1 Pro Preview',
@@ -2879,7 +2895,7 @@
   /**
    * 过滤并筛选可用更新 Release
    */
-  function filterReleases(releasesList, currentVersion = '0.10.0') {
+  function filterReleases(releasesList, currentVersion = '0.10.1') {
     if (!Array.isArray(releasesList)) return [];
     const valid = [];
     for (const rel of releasesList) {
@@ -3042,7 +3058,9 @@
         sharedKey = 'shared_gemini_argon';
       } else if (joinedHints.includes('carbon')) {
         sharedKey = 'shared_gemini_carbon';
-      } else if (joinedHints.includes('hydrogen') || joinedHints.includes('flash')) {
+      } else if (joinedHints.includes('neon') && !joinedHints.includes('hydrogen') && !joinedHints.includes('gemini models')) {
+        sharedKey = 'shared_gemini_neon';
+      } else if (joinedHints.includes('hydrogen') || joinedHints.includes('flash') || joinedHints.includes('gemini models')) {
         sharedKey = 'shared_gemini_main';
       } else {
         sharedKey = `group_${g.groupId || normalizeModelLookupName(title) || idx}`;
@@ -3065,7 +3083,8 @@
       shared_gemini_main: 'Gemini 4 Hydrogen / Gemini 3.8 Flash',
       shared_3p_pool: 'Claude Opus/Sonnet 5.5 / GPT-OSS 120B (第三方共享池)',
       shared_gemini_argon: 'Gemini 4 Argon / Orchestrator',
-      shared_gemini_carbon: 'Gemini 4 Carbon'
+      shared_gemini_carbon: 'Gemini 4 Carbon',
+      shared_gemini_neon: 'Gemini 4 Neon'
     };
 
     for (const cfg of rawConfigs) {
@@ -3079,14 +3098,18 @@
       const poolKey = getModelPoolKey(cfg);
       const defaultSharedKey = getSharedQuotaGroupKey(cfg);
 
-      // 查找匹配的 quotaSummary group
+      // 查找匹配的 quotaSummary group（兼容宿主将全部 Gemini 模型合并为统一 "Gemini Models" 组且未单列 explicitModelNames 的情况）
       const cfgNorm = normalizeModelLookupName(gInfo.productLabel || cfg.label || cfg.modelId);
       const matchedSummaryGroup = parsedGroups.find(pg => {
         if (pg.normalizedExplicitNames.some(en => en && (cfgNorm === en || cfgNorm.includes(en) || en.includes(cfgNorm)))) {
           return true;
         }
         return pg.sharedKey === defaultSharedKey;
-      }) || null;
+      }) || (
+        (defaultSharedKey === 'shared_gemini_neon' || defaultSharedKey === 'shared_gemini_carbon')
+          ? parsedGroups.find(pg => pg.sharedKey === 'shared_gemini_main' && pg.normalizedExplicitNames.length === 0) || null
+          : null
+      );
 
       const resolvedSharedKey = matchedSummaryGroup ? matchedSummaryGroup.sharedKey : defaultSharedKey;
       const pKey = `${resolvedSharedKey}::${gInfo.productKey}`;

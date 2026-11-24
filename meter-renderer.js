@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const METER_VERSION = '0.10.0';
+  const METER_VERSION = '0.10.1';
   const LOOPBACK_HOST = [127, 0, 0, 1].join('.');
 
   // 仅允许在本地回环页面、受控桌面协议或无 location 测试沙箱中挂载，阻止第三方外部页面加载 HUD
@@ -1669,7 +1669,7 @@ input::-webkit-inner-spin-button {
     </div>
 
     <div class="nav-group">
-      <button class="rail-mini-btn" id="btnOpenUpdateSheet" type="button" title="版本检查与热更新 (v0.10.0)">
+      <button class="rail-mini-btn" id="btnOpenUpdateSheet" type="button" title="版本检查与热更新 (v0.10.1)">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M5 21h14"/></svg>
         <i class="badge-dot" id="updateBadgeDot" hidden></i>
       </button>
@@ -2266,7 +2266,7 @@ input::-webkit-inner-spin-button {
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div>
           <div style="font-size:14px;font-weight:650" data-i18n="updateSheetTitle">版本状态与 Live-Host 免重启热更新</div>
-          <div style="font-size:10.5px;color:var(--fg-2)" class="mono" id="runtimeVerDiag">Pulse v0.10.0</div>
+          <div style="font-size:10.5px;color:var(--fg-2)" class="mono" id="runtimeVerDiag">Pulse v0.10.1</div>
         </div>
         <button class="action-btn" type="button" data-close-sheet="updateSheet" data-i18n="btnClose">关闭</button>
       </div>
@@ -2274,7 +2274,7 @@ input::-webkit-inner-spin-button {
       <div class="scrubber-box" style="flex:1;display:flex;flex-direction:column;justify-content:space-between;gap:10px">
         <div>
           <div style="display:flex;align-items:center;gap:8px">
-            <span class="tag neutral" id="updateStateTag">当前版本 v0.10.0</span>
+            <span class="tag neutral" id="updateStateTag">当前版本 v0.10.1</span>
             <button class="ghost-link" id="btnCheckUpdateNow" type="button" data-i18n="btnCheckReleaseNow">↻ 立即检查 GitHub Release</button>
           </div>
           <div style="font-size:11.5px;line-height:1.65;color:var(--fg-2);margin-top:10px;white-space:pre-line" id="updateNotesBox">• Spatial Bento HUD 全新同心双环灵动岛与零滚动驾驶舱架构
@@ -5245,6 +5245,8 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
 
     // Token Ledger & Subscription FX
     historyData: null,
+    historyFetchedAt: 0,
+    historySyncBusy: false,
     ledgerSource: 'all',
     heatMode: 'daily',
     hmPageOffset: 0,
@@ -5295,6 +5297,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   const intervals = new Set();
   let toastTimer = null;
   let autoUpdateTimer = null;
+  let historyRefreshTimer = null;
 
   function notify(msg) {
     const tEl = el('hudToast');
@@ -6511,6 +6514,35 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   }
 
   // ==================== Real-Time Poll, Speed Telemetry & Quota ====================
+  function mergeIntoSpeedRecords(incoming, replaceOldestBase = false) {
+    if (!Array.isArray(incoming) || !incoming.length) return;
+    const byId = new Map();
+    const firstList = replaceOldestBase ? incoming : state.speedRecords;
+    const secondList = replaceOldestBase
+      ? state.speedRecords.filter(r => r && r.callId && (Date.now() - Number(r.timestamp || 0)) < 300000)
+      : incoming;
+    for (const r of firstList) {
+      if (r && r.callId) byId.set(r.callId, r);
+    }
+    for (const r of secondList) {
+      if (!r || !r.callId) continue;
+      const prev = byId.get(r.callId);
+      if (!prev || Number(r.outputTokens || 0) >= Number(prev.outputTokens || 0)) {
+        byId.set(r.callId, r);
+      }
+    }
+    const merged = Array.from(byId.values());
+    state.speedRecords = merged.length > 2500 ? merged.slice(-2500) : merged;
+  }
+
+  function scheduleHistoryRefresh(delayMs = 400) {
+    if (state.disposed) return;
+    clearTimeout(historyRefreshTimer);
+    historyRefreshTimer = setTimeout(() => {
+      if (!state.disposed) void syncTokenHistory(false);
+    }, delayMs);
+  }
+
   function mergeAllSpeedCalls() {
     const byId = new Map();
     for (const r of state.speedRecords) {
@@ -6682,7 +6714,10 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
       state.lastRoundCost = lastPriced ? Number(lastPriced.costUSD) : 0;
 
       if (finalBatch.length > 0) {
+        // 即时将已完成轮次的测速样本合并至内存 speedRecords，即使随后立即切换会话也不会丢失测速决斗样本
+        mergeIntoSpeedRecords(finalBatch.map(item => item.call).filter(isValidCallSpeed), false);
         void (async () => {
+          let anyRecorded = false;
           for (let start = 0; start < finalBatch.length; start += 250) {
             const slice = finalBatch.slice(start, start + 250);
             const callsChunk = slice.map((item) => item.call);
@@ -6700,6 +6735,8 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
                     state.pendingFinalCalls.delete(item.call.callId);
                   }
                 }
+              } else {
+                anyRecorded = true;
               }
             } catch {
               for (const item of slice) {
@@ -6708,6 +6745,10 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
                 }
               }
             }
+          }
+          // 入账落盘完成后自动节流拉取最新聚合账本，使「账本 API 折算」与「测速决斗」无需手动点击刷新即可实时增长
+          if (anyRecorded && !state.disposed) {
+            scheduleHistoryRefresh(350);
           }
         })();
       }
@@ -6781,12 +6822,13 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     controllers.add(scanCtrl);
     let scanTid = null;
     try {
+      const liveCsrf = getActiveCsrfToken();
       const scanPromise = callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.scan === 'function'
           ? () => globalThis.contextMeterAPI.scan(id, force)
           : null,
         liveRoute: '/scan',
-        body: { id, force },
+        body: { id, force, ...(liveCsrf ? { csrfToken: liveCsrf } : {}) },
         signal: scanCtrl.signal
       });
       // 为 IPC/Live 归档扫描施加 35s 兜底超时，防止休眠唤醒导致挂起后 scanBusy 永久卡死
@@ -7006,13 +7048,19 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   async function syncQuotaFromHost(force = false) {
     if (state.disposed) return null;
     syncActiveModelIdentity();
+    const curCsrf = getActiveCsrfToken();
     try {
+      const quotaPayload = {
+        force: Boolean(force),
+        currentModel: state.activeModelId || state.activeModelLabel || null,
+        ...(curCsrf ? { csrfToken: curCsrf } : {})
+      };
       const res = await callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.getQuota === 'function'
-          ? () => globalThis.contextMeterAPI.getQuota({ force: Boolean(force) })
+          ? () => globalThis.contextMeterAPI.getQuota(quotaPayload)
           : null,
         liveRoute: '/quota',
-        body: { force: Boolean(force), currentModel: state.activeModelId || state.activeModelLabel || null }
+        body: quotaPayload
       });
       const payload = res?.data || res;
       if (payload) {
@@ -7085,6 +7133,8 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
 
   async function syncTokenHistory(force = false) {
     if (state.disposed) return;
+    if (state.historySyncBusy && !force) return;
+    state.historySyncBusy = true;
     try {
       const res = await callBackend({
         ipcFn: typeof globalThis.contextMeterAPI?.getTokenHistory === 'function'
@@ -7093,9 +7143,11 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
         liveRoute: '/token-history',
         body: { force }
       });
+      if (state.disposed) return;
       if (res?.ok && res.data) {
+        state.historyFetchedAt = Date.now();
         if (Array.isArray(res.data.speedRecords)) {
-          state.speedRecords = res.data.speedRecords;
+          mergeIntoSpeedRecords(res.data.speedRecords, true);
         }
         if (Array.isArray(res.data.cascadeModelConfigs) && res.data.cascadeModelConfigs.length > 0) {
           mergeCascadeConfigs(res.data.cascadeModelConfigs);
@@ -7116,7 +7168,9 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
         renderBudgetSpace();
         if (state.openSheetId === 'speedSheet') renderSpeedSheet();
       }
-    } catch {}
+    } catch {} finally {
+      state.historySyncBusy = false;
+    }
   }
 
   async function syncStudioStatuses() {
@@ -7588,6 +7642,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     if (poolKey === 'shared_3p_pool' && s.length > 18) return 'Claude / 第三方池';
     if (poolKey === 'shared_gemini_argon' && s.length > 18) return 'Gemini Argon';
     if (poolKey === 'shared_gemini_carbon' && s.length > 18) return 'Gemini Carbon';
+    if (poolKey === 'shared_gemini_neon' && s.length > 18) return 'Gemini Neon';
     return s;
   }
 
@@ -8839,6 +8894,12 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
   }
 
   // ==================== Interactive Event Bindings ====================
+  function maybeAutoRefreshHistory() {
+    if (!state.disposed && !state.historySyncBusy && (Date.now() - state.historyFetchedAt) > 12000) {
+      void syncTokenHistory(false);
+    }
+  }
+
   function toggleHud(open) {
     state.hudOpen = Boolean(open);
     syncHudAnchorPosition();
@@ -8847,6 +8908,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     el('glanceTip')?.classList.toggle('hidden-tip', state.hudOpen);
     if (state.hudOpen) {
       renderAll();
+      maybeAutoRefreshHistory();
     } else {
       state.openSheetId = null;
       qsa('.glass-sheet').forEach(s => s.classList.remove('open'));
@@ -8860,7 +8922,10 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     qsa('.rail-btn').forEach(b => b.classList.toggle('active', b.dataset.space === sp));
     qsa('.space-view').forEach(v => v.classList.toggle('active', v.id === `space-${sp}`));
     applyStaticTranslations();
-    if (sp === 'ledger') renderLedgerSpace();
+    if (sp === 'ledger') {
+      renderLedgerSpace();
+      maybeAutoRefreshHistory();
+    }
     if (sp === 'budget') renderBudgetSpace();
     if (sp === 'studio') renderStudioSpace();
   }
@@ -8869,7 +8934,10 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
     qsa('.glass-sheet').forEach(s => s.classList.toggle('open', s.id === sheetId));
     state.openSheetId = sheetId;
     if (sheetId === 'auditSheet') renderAuditSheet();
-    if (sheetId === 'speedSheet') renderSpeedSheet();
+    if (sheetId === 'speedSheet') {
+      renderSpeedSheet();
+      maybeAutoRefreshHistory();
+    }
     if (sheetId === 'subSheet') renderSubscriptionSheet();
   }
 
@@ -9946,6 +10014,12 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
       switchSpace(sp);
       return state.activeSpace;
     },
+    openSheetForTest: (sheetId) => {
+      toggleHud(true);
+      openSheet(sheetId);
+      return state.openSheetId;
+    },
+    getSpeedRecordsCountForTest: () => state.speedRecords.length,
     buildTelemetrySnapshotForTest: () => buildTelemetryMarkdownSnapshot(),
     buildTurnTimelineForTest: (calls) => buildSessionTurnTimeline(calls || state.sessionCalls),
     buildLedgerExportForTest: (fmt) => buildLedgerExportData(fmt),
@@ -9974,6 +10048,7 @@ function renderSpeedDuelView(barsContainer, trendSvg, trendTitleEl, trendMedianE
       clearTimeout(toastTimer);
       clearTimeout(autoUpdateTimer);
       clearTimeout(subPriceSaveTimer);
+      clearTimeout(historyRefreshTimer);
       uninstallRequestInterceptor();
       document.removeEventListener?.('click', onDocClick, true);
       document.removeEventListener?.('keydown', onDocKeydown);

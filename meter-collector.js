@@ -622,6 +622,12 @@ async function collect(origin, id, options = {}) {
   if (options.force) filesCache.clear();
   if (!options.force && previous?.result && Date.now() - previous.at < 12000) return previous.result;
   const priorCached = previous?.result ? { result: previous.result, at: previous.at } : null;
+  if (typeof options.cookieHeader === 'string' && options.cookieHeader.trim()) {
+    mergeOriginSetCookies(origin, options.cookieHeader.split(';').map(s => s.trim()).filter(Boolean));
+  }
+  if (typeof options.csrfToken === 'string' && options.csrfToken.trim() && !/[\r\n]/.test(options.csrfToken)) {
+    csrfTokenByOrigin.set(origin, options.csrfToken.trim());
+  }
   const task = (async () => {
     const signal = abortController?.signal || null;
     try {
@@ -2424,7 +2430,11 @@ async function fetchQuotaSnapshotFromHost(options = {}) {
     } else {
       try {
         const connector = typeof options.connect === 'function' ? options.connect : require('./local-api').connect;
-        const api = await connector(options.origin ? { origin: options.origin } : undefined);
+        const connOpts = {};
+        if (options.origin) connOpts.origin = options.origin;
+        if (typeof options.cookieHeader === 'string' && options.cookieHeader) connOpts.cookieHeader = options.cookieHeader;
+        if (typeof options.csrfToken === 'string' && options.csrfToken) connOpts.csrfToken = options.csrfToken;
+        const api = await connector(Object.keys(connOpts).length ? connOpts : undefined);
         const [uRes, qRes] = await Promise.allSettled([
           api.call('GetUserStatus', {}),
           api.call('RetrieveUserQuotaSummary', {})
@@ -2610,7 +2620,11 @@ async function fetchUserStatusFromHost(options = {}) {
   }
   try {
     const { connect } = require('./local-api');
-    const api = await connect(options.origin ? { origin: options.origin } : undefined);
+    const connOpts = {};
+    if (options.origin) connOpts.origin = options.origin;
+    if (typeof options.cookieHeader === 'string' && options.cookieHeader) connOpts.cookieHeader = options.cookieHeader;
+    if (typeof options.csrfToken === 'string' && options.csrfToken) connOpts.csrfToken = options.csrfToken;
+    const api = await connect(Object.keys(connOpts).length ? connOpts : undefined);
     const [res, availRes] = await Promise.all([
       api.call('GetUserStatus', {}),
       api.call('GetAvailableModels', { forceRefresh: false }).catch(() => null)

@@ -598,12 +598,16 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
         if (req.url === '/quota') {
           const reqTargetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
           const targetOrigin = allowedSet.has(reqTargetOrigin) ? reqTargetOrigin : reqOrigin;
+          const safeCsrf = (typeof request?.csrfToken === 'string' && request.csrfToken.trim().length <= 512 && !/[\r\n]/.test(request.csrfToken))
+            ? request.csrfToken.trim()
+            : '';
           const resData = await fetchQuotaSnapshotFromHost({
             force: request.force === true,
             origin: targetOrigin,
             backendSource: 'live-host',
             currentModel: request.currentModel || null,
-            browsePoolKey: request.browsePoolKey || null
+            browsePoolKey: request.browsePoolKey || null,
+            ...(safeCsrf ? { csrfToken: safeCsrf } : {})
           });
           const { _raw, ...safeData } = resData || {};
           res.setHeader('Content-Type', 'application/json');
@@ -612,7 +616,13 @@ function createLiveRequestHandler({ api, secret, getAllowedOrigins = null, onShu
         }
         const scanOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
         const effectiveOrigin = allowedSet.has(scanOrigin) ? scanOrigin : reqOrigin;
-        const data = await collect(effectiveOrigin, request.id, { force: request.force === true });
+        const scanCsrf = (typeof request?.csrfToken === 'string' && request.csrfToken.trim().length <= 512 && !/[\r\n]/.test(request.csrfToken))
+          ? request.csrfToken.trim()
+          : '';
+        const data = await collect(effectiveOrigin, request.id, {
+          force: request.force === true,
+          ...(scanCsrf ? { csrfToken: scanCsrf } : {})
+        });
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({
           ok: true,

@@ -225,8 +225,33 @@ function sanitizeUpdateOptions(options) {
   return safe;
 }
 
-function sanitizeQuotaOptions(options, fallbackOrigin) {
+function sanitizeSafeCsrfToken(raw) {
+  if (typeof raw !== 'string') return '';
+  const s = raw.trim();
+  if (!s || s.length > 512 || /[\r\n]/.test(s)) return '';
+  return s;
+}
+
+async function resolveSenderCookieHeader(event, origin) {
+  const norm = normalizeLoopbackOrigin(origin);
+  if (!norm) return '';
+  try {
+    const cookiesApi = event?.sender?.session?.cookies;
+    if (!cookiesApi || typeof cookiesApi.get !== 'function') return '';
+    const list = await cookiesApi.get({ url: norm });
+    if (!Array.isArray(list) || !list.length) return '';
+    return list
+      .filter(c => c && typeof c.name === 'string' && c.name && !/[\r\n;=]/.test(c.name) && !/[\r\n]/.test(String(c.value ?? '')))
+      .map(c => `${c.name}=${c.value ?? ''}`)
+      .join('; ');
+  } catch {
+    return '';
+  }
+}
+
+function sanitizeQuotaOptions(options, fallbackOrigin, cookieHeader = '') {
   const safe = { origin: fallbackOrigin, backendSource: 'electron-ipc' };
+  if (cookieHeader) safe.cookieHeader = cookieHeader;
   if (typeof options === 'boolean') {
     safe.force = options;
     return safe;
@@ -235,6 +260,8 @@ function sanitizeQuotaOptions(options, fallbackOrigin) {
     if (options.force === true) safe.force = true;
     if (typeof options.currentModel === 'string' && options.currentModel.trim()) safe.currentModel = options.currentModel.trim();
     if (typeof options.browsePoolKey === 'string' && options.browsePoolKey.trim()) safe.browsePoolKey = options.browsePoolKey.trim();
+    const csrf = sanitizeSafeCsrfToken(options.csrfToken);
+    if (csrf) safe.csrfToken = csrf;
     const normOrigin = normalizeLoopbackOrigin(options.origin);
     if (normOrigin) safe.origin = normOrigin;
   }
@@ -759,7 +786,18 @@ function registerMeterIpcHandlers(ipcMain) {
   ipcMain.handle('context-meter:scan', async (event, id, force) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return { ok: true, data: await collect(resolveSenderOrigin(url), id, { force: force === true, supersedePrevious: true }) }; }
+    try {
+      const senderOrigin = resolveSenderOrigin(url);
+      const cookieHeader = await resolveSenderCookieHeader(event, senderOrigin);
+      return {
+        ok: true,
+        data: await collect(senderOrigin, id, {
+          force: force === true,
+          supersedePrevious: true,
+          ...(cookieHeader ? { cookieHeader } : {})
+        })
+      };
+    }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -800,7 +838,9 @@ function registerMeterIpcHandlers(ipcMain) {
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
       const collector = require('./meter-collector');
-      const opts = sanitizeQuotaOptions(options, resolveSenderOrigin(url));
+      const senderOrigin = resolveSenderOrigin(url);
+      const cookieHeader = await resolveSenderCookieHeader(event, senderOrigin);
+      const opts = sanitizeQuotaOptions(options, senderOrigin, cookieHeader);
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
       return { ok: true, data: safePayload };
